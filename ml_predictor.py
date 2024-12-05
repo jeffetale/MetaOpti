@@ -13,6 +13,8 @@ class MLPredictor:
         self.direction_model = None
         self.return_model = None
         self.scaler = None
+        self.features = None
+        
         self.load_models()
     
     def load_models(self):
@@ -21,6 +23,8 @@ class MLPredictor:
             self.direction_model = joblib.load(f'ml_models/{self.symbol}_direction_model.pkl')
             self.return_model = joblib.load(f'ml_models/{self.symbol}_return_model.pkl')
             self.scaler = joblib.load(f'ml_models/{self.symbol}_scaler.pkl')
+            self.features = joblib.load(f'ml_models/{self.symbol}_metadata.pkl')
+            logging.info(f"Models loaded for {self.symbol}")
         except FileNotFoundError:
             logging.error(f"Models for {self.symbol} not found. Train models first.")
             return None
@@ -72,7 +76,6 @@ class MLPredictor:
         return ranges.max(axis=1).rolling(window=period).mean()
     
     def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50, threshold=0.6) -> Tuple[Optional[str], float, float]:
-        """Predict trading signal and potential return"""
         if not all([self.direction_model, self.return_model, self.scaler]):
             logging.error("Models not loaded. Cannot predict.")
             return None, 0, 0
@@ -86,11 +89,14 @@ class MLPredictor:
         rates_frame = pd.DataFrame(rates)
         
         try:
-            # Extract and scale features
+            # Extract features
             features = self.extract_features(rates_frame)
-            scaled_features = self.scaler.transform([features])
             
-            # Predict direction and return
+            # Ensure features match exactly the training columns
+            features_df = pd.DataFrame([features], columns=self.features["features"])
+            scaled_features = self.scaler.transform(features_df)
+            
+            # Rest of the prediction code remains the same
             direction_prob = self.direction_model.predict_proba(scaled_features)[0]
             predicted_return = self.return_model.predict(scaled_features)[0]
             
@@ -103,7 +109,8 @@ class MLPredictor:
                 signal = "hold"
             
             return signal, direction_prob[1], predicted_return
-        
+
         except Exception as e:
             logging.error(f"Prediction error: {e}")
             return None, 0, 0
+

@@ -177,7 +177,7 @@ if __name__ == "__main__":
         logging.error("MT5 initialization failed")
         exit()
     
-    # Your symbols from config
+    # Symbols from config to train models
     symbols = ["EURAUD", "AUDUSD", "GBPJPY", "EURJPY", "USDJPY", "USDCHF", "GBPUSD", "EURUSD", "NZDUSD", "USDSEK", "USDCNH", "USDCAD"]
     
     ml_trainer = MLTrader(symbols)
