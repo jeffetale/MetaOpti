@@ -52,7 +52,7 @@ def should_trade_symbol(symbol):
     
     if state.is_restricted:
         # Extend restriction time and make it more flexible
-        if state.last_trade_time and (datetime.now() - state.last_trade_time).hours < 2:  # Increased from 1 to 2 hours
+        if state.last_trade_time and (datetime.now() - state.last_trade_time).hours < 0.083:  # Increased from 1 hr to 5 min
             return False
         
         # More lenient restriction lifting
@@ -266,7 +266,7 @@ def detect_manual_intervention(symbol):
             logging.warning(f"Possible manual intervention detected for {symbol}: All positions closed")
             trading_state.manual_intervention_detected = True
             trading_state.last_manual_intervention_time = datetime.now()
-            trading_state.manual_intervention_cooldown = 2  # 2 hours cooldown
+            trading_state.manual_intervention_cooldown = 0.083  # 5 min cooldown
             return True
     
     # If positions exist, compare with last known state
@@ -276,7 +276,7 @@ def detect_manual_intervention(symbol):
             logging.warning(f"Position count changed for {symbol}: Possible manual intervention")
             trading_state.manual_intervention_detected = True
             trading_state.last_manual_intervention_time = datetime.now()
-            trading_state.manual_intervention_cooldown = 2  # 2 hours cooldown
+            trading_state.manual_intervention_cooldown = 0.083  # 5 min cooldown
             return True
         
         # Check individual position details
@@ -286,7 +286,7 @@ def detect_manual_intervention(symbol):
                 logging.warning(f"Position details changed for {symbol}: Possible manual intervention")
                 trading_state.manual_intervention_detected = True
                 trading_state.last_manual_intervention_time = datetime.now()
-                trading_state.manual_intervention_cooldown = 2  # 2 hours cooldown
+                trading_state.manual_intervention_cooldown = 0.083  # 5 min cooldown
                 return True
     
     return False
