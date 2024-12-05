@@ -1,3 +1,5 @@
+# ml_trainer.py
+
 import numpy as np
 import pandas as pd
 import MetaTrader5 as mt5
@@ -22,14 +24,11 @@ class MLTrader:
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        """Fetch historical price data for feature engineering"""
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 1000)
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 2000)
         if rates is None:
-            logging.error(f"Failed to fetch data for {symbol}")
-            return None
-        
-        df = pd.DataFrame(rates)
-        return df
+            raise ValueError(f"Failed to fetch data for {symbol}")
+        return pd.DataFrame(rates)
+
     
     def feature_engineering(self, df):
         """Create advanced features for ML model"""
@@ -47,6 +46,12 @@ class MLTrader:
         # Price changes
         df['price_change_1'] = df['close'].pct_change()
         df['price_change_5'] = df['close'].pct_change(5)
+
+        # Predict based on future price movements
+        df['future_close'] = df['close'].shift(-1)  # Shift -1 for next-period prediction
+        df['target_return'] = (df['future_close'] - df['close']) / df['close']
+        df['target_direction'] = np.where(df['target_return'] > 0, 1, 0)  # 1 for uptrend, 0 for downtrend
+
         
         return df
     
@@ -75,34 +80,27 @@ class MLTrader:
         return ranges.max(axis=1).rolling(window=period).mean()
     
     def prepare_data(self, symbol):
-        """Prepare data for training"""
-        df = self.fetch_historical_data(symbol)
-        if df is None:
+        try:
+            df = self.fetch_historical_data(symbol)
+            df = self.feature_engineering(df)
+            logging.info(f"Data shape for {symbol} after feature engineering: {df.shape}")
+            df.dropna(inplace=True)
+            logging.info(f"Data shape for {symbol} after dropping NaNs: {df.shape}")
+            
+            if len(df) < 100:
+                raise ValueError("Insufficient data after feature engineering")
+            
+            features = ['SMA_10', 'SMA_50', 'RSI', 'MACD', 'ATR', 'price_change_1', 'price_change_5']
+            X = df[features]
+            y_direction = df['target_direction']
+            y_return = df['target_return']
+            
+            return X, y_direction, y_return
+        except Exception as e:
+            logging.error(f"Error preparing data for {symbol}: {e}")
             return None, None, None
-        
-        df = self.feature_engineering(df)
-        
-        # Create target variables with careful NaN handling
-        df['target_direction'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)
-        df['target_return'] = df['close'].shift(-1) - df['close']
-        
-        # Remove rows with NaN values
-        df.dropna(inplace=True)
-        
-        # Prepare features
-        features = ['SMA_10', 'SMA_50', 'RSI', 'MACD', 'ATR', 
-                    'price_change_1', 'price_change_5']
-        
-        # Ensure we have enough data after dropping NaNs
-        if len(df) < 100:
-            logging.warning(f"Insufficient data for {symbol} after cleaning")
-            return None, None, None
-        
-        X = df[features]
-        y_direction = df['target_direction']
-        y_return = df['target_return']
-        
-        return (X, y_direction, y_return)
+
+
     
     def train_models(self):
         """Train ML models for each symbol"""
@@ -152,13 +150,27 @@ class MLTrader:
                 joblib.dump(return_predictor, f'ml_models/{symbol}_return_model.pkl')
                 joblib.dump(scaler, f'ml_models/{symbol}_scaler.pkl')
                 
+                # Save metadata
+                try:
+                    features = X.columns.tolist()
+                    model_metadata = {
+                        "features": features,
+                        "scaler": scaler,
+                        "model_params": dir_classifier.get_params()
+                    }
+                    joblib.dump(model_metadata, f'ml_models/{symbol}_metadata.pkl')
+                except Exception as e:
+                    logging.error(f"Error saving metadata for {symbol}: {e}")
+
+
+                
             except Exception as e:
                 logging.error(f"Error training models for {symbol}: {e}")
                 continue
         
         logging.info("Model training completed.")
 
-# Example usage
+
 if __name__ == "__main__":
     # Initialize MT5 connection
     if not mt5.initialize():

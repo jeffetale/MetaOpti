@@ -1,3 +1,5 @@
+# ml_predictor.py
+
 import numpy as np
 import pandas as pd
 import MetaTrader5 as mt5
@@ -69,7 +71,7 @@ class MLPredictor:
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         return ranges.max(axis=1).rolling(window=period).mean()
     
-    def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50) -> Tuple[Optional[str], float, float]:
+    def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50, threshold=0.6) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
         if not all([self.direction_model, self.return_model, self.scaler]):
             logging.error("Models not loaded. Cannot predict.")
@@ -93,25 +95,15 @@ class MLPredictor:
             predicted_return = self.return_model.predict(scaled_features)[0]
             
             # Interpret predictions
-            if direction_prob[1] > 0.6:  # High confidence in upward movement
+            if direction_prob[1] > threshold:
                 signal = "buy"
-            elif direction_prob[0] > 0.6:  # High confidence in downward movement
+            elif direction_prob[0] > threshold:
                 signal = "sell"
             else:
-                signal = None
+                signal = "hold"
             
             return signal, direction_prob[1], predicted_return
         
         except Exception as e:
             logging.error(f"Prediction error: {e}")
             return None, 0, 0
-
-# Example of how to use in your main trading script
-def enhance_signal_with_ml(symbol):
-    ml_predictor = MLPredictor(symbol)
-    ml_signal, ml_confidence, ml_return = ml_predictor.predict()
-    
-    # You can incorporate ML predictions into your existing signal generation
-    # For example, adjust signal strength or bias based on ML confidence
-    
-    return ml_signal, ml_confidence, ml_return
