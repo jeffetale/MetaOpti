@@ -2,7 +2,58 @@
 
 import threading, statistics, time
 from config import initialize_mt5, SYMBOLS
-from trading import logging, symbol_trader, mt5, shutdown, trading_state
+from trading import logging, symbol_trader, mt5, trading_state
+
+def close_all_positions():
+    """Close all open positions and return total profit/loss"""
+    total_profit = 0
+    positions = mt5.positions_get()
+    
+    if positions is None:
+        logging.info("No positions to close")
+        return 0
+        
+    for position in positions:
+        # Prepare the request to close position
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "volume": position.volume,
+            "type": mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+            "price": mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": "close position on shutdown",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        # Send the request
+        result = mt5.order_send(request)
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            profit = position.profit
+            total_profit += profit
+            logging.info(f"Closed position {position.ticket} for {position.symbol} with profit: {profit}")
+        else:
+            logging.error(f"Failed to close position {position.ticket}: {result.comment}")
+            
+    return total_profit
+
+def shutdown():
+    """Perform clean shutdown of the trading bot"""
+    logging.info("Initiating shutdown sequence...")
+    
+    # Close all positions
+    total_profit = close_all_positions()
+    logging.info(f"Total profit from closed positions: {total_profit}")
+    
+    # Shutdown MT5 connection
+    mt5.shutdown()
+    logging.info("MT5 connection closed")
+    
+    # Final status log
+    logging.info("Trading bot shutdown complete")
 
 def main():
     if not initialize_mt5():
