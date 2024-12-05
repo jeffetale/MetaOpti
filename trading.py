@@ -47,21 +47,19 @@ def adjust_trading_parameters(symbol, profit):
         state.profit_threshold = max(MIN_PROFIT_THRESHOLD, state.profit_threshold * 0.95)  # Slower decrease
 
 def should_trade_symbol(symbol):
-    """More tolerant approach to symbol trading restrictions"""
+    """Determine if we should trade a symbol based on its performance"""
     state = trading_state.symbol_states[symbol]
     
     if state.is_restricted:
-        # Extend restriction time and make it more flexible
-        if state.last_trade_time and (datetime.now() - state.last_trade_time).hours < 0.083:  # Decreased from 1 hr to 5 min
+        # Check if enough time has passed to retry
+        current_time = datetime.now()
+        if state.last_trade_time and (current_time - state.last_trade_time).total_seconds() < 300:  # 5 minutes
             return False
         
-        # More lenient restriction lifting
-        if state.win_rate > MIN_WIN_RATE * 0.8:  # Lowered threshold
-            state.is_restricted = False
-            state.consecutive_losses = 0  # Reset consecutive losses
-            logging.info(f"{symbol} restrictions lifted")
-            return True
-        return False
+        # Reset restriction if conditions improve
+        state.is_restricted = False
+        logging.info(f"{symbol} restrictions lifted")
+        return True
     
     return True
 
@@ -291,6 +289,83 @@ def detect_manual_intervention(symbol):
     
     return False
 
+def symbol_trader(symbol):
+    """Enhanced symbol trading loop with more flexible intervention handling"""
+    while True:
+        try:
+            # Check for manual intervention
+            intervention_detected = detect_manual_intervention(symbol)
+            
+            # Get the state for this symbol
+            state = trading_state.symbol_states[symbol]
+            
+            # Reset restrictions if needed
+            if intervention_detected:
+                # Perform reconciliation
+                validated_positions = validate_positions()
+                # logging.info(f"Validated positions for {symbol}: {validated_positions}")
+                
+                # Update last known positions
+                state.last_known_positions = validated_positions
+                
+                # Adjust trading parameters more conservatively
+                state.volume *= 0.8  # Reduce volume after intervention
+                state.consecutive_losses += 1
+                
+                # Extended cooldown if too many interventions
+                if state.consecutive_losses > 3:
+                    state.is_restricted = True
+                    logging.warning(f"{symbol} temporarily restricted due to multiple interventions")
+            
+            # Check manual intervention cooldown
+            current_time = datetime.now()
+            if trading_state.manual_intervention_detected:
+                # Check if 5 minutes have passed since last intervention
+                if current_time - trading_state.last_manual_intervention_time > timedelta(minutes=5):
+                    trading_state.manual_intervention_detected = False
+                    trading_state.manual_intervention_cooldown = 0
+                    state.is_restricted = False
+                    state.consecutive_losses = max(0, state.consecutive_losses - 1)
+                    logging.info(f"{symbol} restrictions lifted after cooldown")
+                else:
+                    # Skip this iteration during cooldown
+                    time.sleep(30)
+                    continue
+            
+            # Manage existing positions
+            manage_open_positions(symbol)
+            
+            # Check if we should look for new trades
+            if should_trade_symbol(symbol):
+                positions = mt5.positions_get(symbol=symbol)
+                
+                if not positions:  # No open positions for this symbol
+                    signal, atr, potential_profit = get_signal(symbol)
+                    if signal and atr and potential_profit > 0:
+                        # Adjust volume based on recent interventions
+                        adjusted_volume = state.volume * (0.9 ** max(0, state.consecutive_losses - 1))
+                        
+                        success = place_order(symbol, signal, atr, adjusted_volume)
+                        
+                        if success:
+                            state.last_trade_time = datetime.now()
+                            state.consecutive_losses = max(0, state.consecutive_losses - 1)
+                        else:
+                            state.consecutive_losses += 1
+                            
+                            if state.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                                state.is_restricted = True
+                                logging.warning(f"{symbol} restricted due to consecutive losses")
+            
+            # Store current positions for next iteration comparison
+            state.last_known_positions = mt5.positions_get(symbol=symbol)
+            
+            time.sleep(0.1)  # Check every 100ms
+            
+        except Exception as e:
+            logging.error(f"Error in {symbol} trader: {e}")
+            time.sleep(1)
+
 def close_position(position):
     """Close an open position"""
     request = {
@@ -407,121 +482,3 @@ def place_order(symbol, direction, atr, volume):
     }, indent=2)}")
 
     return True
-
-def symbol_trader(symbol):
-    """Enhanced symbol trading loop with manual intervention handling"""
-    while True:
-        try:
-            # Check for manual intervention
-            if detect_manual_intervention(symbol):
-                # Perform reconciliation
-                validated_positions = validate_positions()
-                
-                # Adjust trading parameters
-                state = trading_state.symbol_states[symbol]
-                state.volume *= 0.8  # Reduce volume after intervention
-                state.consecutive_losses += 1
-                
-                # Extended cooldown if too many interventions
-                if state.consecutive_losses > 3:
-                    state.is_restricted = True
-                    logging.warning(f"{symbol} temporarily restricted due to multiple interventions")
-            
-            # Check manual intervention cooldown
-            if trading_state.manual_intervention_cooldown > 0:
-                current_time = datetime.now()
-                if current_time - trading_state.last_manual_intervention_time > timedelta(hours=0.038): # 5 mins
-                    trading_state.manual_intervention_detected = False
-                    trading_state.manual_intervention_cooldown = 0
-                else:
-                    # Skip trading during cooldown 30s
-                    time.sleep(30)
-                    continue
-            
-            # Manage existing positions
-            manage_open_positions(symbol)
-            
-            # Check if we should look for new trades
-            if should_trade_symbol(symbol):
-                positions = mt5.positions_get(symbol=symbol)
-                
-                if not positions:  # No open positions for this symbol
-                    signal, atr, potential_profit = get_signal(symbol)
-                    if signal and atr and potential_profit > 0:
-                        state = trading_state.symbol_states[symbol]
-                        
-                        # Adjust volume based on recent interventions
-                        adjusted_volume = state.volume * (0.9 ** state.consecutive_losses)
-                        
-                        success = place_order(symbol, signal, atr, adjusted_volume)
-                        
-                        if success:
-                            state.last_trade_time = datetime.now()
-                            state.consecutive_losses = max(0, state.consecutive_losses - 1)
-                        else:
-                            state.consecutive_losses += 1
-                            
-                            if state.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                                state.is_restricted = True
-                                logging.warning(f"{symbol} restricted due to consecutive losses")
-            
-            # Store current positions for next iteration comparison
-            state = trading_state.symbol_states[symbol]
-            state.last_known_positions = mt5.positions_get(symbol=symbol)
-            
-            time.sleep(0.1)  # Check every 100ms
-            
-        except Exception as e:
-            logging.error(f"Error in {symbol} trader: {e}")
-            time.sleep(1)
-
-def close_all_positions():
-    """Close all open positions and return total profit/loss"""
-    total_profit = 0
-    positions = mt5.positions_get()
-    
-    if positions is None:
-        logging.info("No positions to close")
-        return 0
-        
-    for position in positions:
-        # Prepare the request to close position
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "position": position.ticket,
-            "symbol": position.symbol,
-            "volume": position.volume,
-            "type": mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
-            "price": mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask,
-            "deviation": 20,
-            "magic": 234000,
-            "comment": "close position on shutdown",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        # Send the request
-        result = mt5.order_send(request)
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            profit = position.profit
-            total_profit += profit
-            logging.info(f"Closed position {position.ticket} for {position.symbol} with profit: {profit}")
-        else:
-            logging.error(f"Failed to close position {position.ticket}: {result.comment}")
-    
-    return total_profit
-
-def shutdown():
-    """Perform clean shutdown of the trading bot"""
-    logging.info("Initiating shutdown sequence...")
-    
-    # Close all positions
-    total_profit = close_all_positions()
-    logging.info(f"Total profit from closed positions: {total_profit}")
-    
-    # Shutdown MT5 connection
-    mt5.shutdown()
-    logging.info("MT5 connection closed")
-    
-    # Final status log
-    logging.info("Trading bot shutdown complete")
