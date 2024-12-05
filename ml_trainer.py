@@ -78,18 +78,25 @@ class MLTrader:
         """Prepare data for training"""
         df = self.fetch_historical_data(symbol)
         if df is None:
-            return None, None
+            return None, None, None
         
         df = self.feature_engineering(df)
-        df.dropna(inplace=True)
         
-        # Create target variables
+        # Create target variables with careful NaN handling
         df['target_direction'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)
         df['target_return'] = df['close'].shift(-1) - df['close']
+        
+        # Remove rows with NaN values
+        df.dropna(inplace=True)
         
         # Prepare features
         features = ['SMA_10', 'SMA_50', 'RSI', 'MACD', 'ATR', 
                     'price_change_1', 'price_change_5']
+        
+        # Ensure we have enough data after dropping NaNs
+        if len(df) < 100:
+            logging.warning(f"Insufficient data for {symbol} after cleaning")
+            return None, None, None
         
         X = df[features]
         y_direction = df['target_direction']
@@ -105,12 +112,17 @@ class MLTrader:
             # Prepare data
             X, y_direction, y_return = self.prepare_data(symbol)
             if X is None:
+                logging.warning(f"Skipping {symbol} due to insufficient data")
                 continue
             
             # Split data
-            X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
-                X, y_direction, y_return, test_size=0.2, random_state=42
-            )
+            try:
+                X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
+                    X, y_direction, y_return, test_size=0.2, random_state=42
+                )
+            except ValueError as e:
+                logging.error(f"Error splitting data for {symbol}: {e}")
+                continue
             
             # Scale features
             scaler = StandardScaler()
@@ -118,26 +130,31 @@ class MLTrader:
             X_test_scaled = scaler.transform(X_test)
             
             # Train direction classifier
-            dir_classifier = RandomForestClassifier(n_estimators=100, random_state=42)
-            dir_classifier.fit(X_train_scaled, y_dir_train)
-            
-            # Train return predictor
-            return_predictor = GradientBoostingRegressor(n_estimators=100, random_state=42)
-            return_predictor.fit(X_train_scaled, y_ret_train)
-            
-            # Evaluate models
-            dir_pred = dir_classifier.predict(X_test_scaled)
-            ret_pred = return_predictor.predict(X_test_scaled)
-            
-            logging.info(f"Direction Classification Report for {symbol}:")
-            logging.info(classification_report(y_dir_test, dir_pred))
-            logging.info(f"Return Prediction MSE: {mean_squared_error(y_ret_test, ret_pred)}")
-            
-            # Save models and scaler
-            os.makedirs('ml_models', exist_ok=True)
-            joblib.dump(dir_classifier, f'ml_models/{symbol}_direction_model.pkl')
-            joblib.dump(return_predictor, f'ml_models/{symbol}_return_model.pkl')
-            joblib.dump(scaler, f'ml_models/{symbol}_scaler.pkl')
+            try:
+                dir_classifier = RandomForestClassifier(n_estimators=100, random_state=42)
+                dir_classifier.fit(X_train_scaled, y_dir_train)
+                
+                # Train return predictor
+                return_predictor = GradientBoostingRegressor(n_estimators=100, random_state=42)
+                return_predictor.fit(X_train_scaled, y_ret_train)
+                
+                # Evaluate models
+                dir_pred = dir_classifier.predict(X_test_scaled)
+                ret_pred = return_predictor.predict(X_test_scaled)
+                
+                logging.info(f"Direction Classification Report for {symbol}:")
+                logging.info(classification_report(y_dir_test, dir_pred))
+                logging.info(f"Return Prediction MSE: {mean_squared_error(y_ret_test, ret_pred)}")
+                
+                # Save models and scaler
+                os.makedirs('ml_models', exist_ok=True)
+                joblib.dump(dir_classifier, f'ml_models/{symbol}_direction_model.pkl')
+                joblib.dump(return_predictor, f'ml_models/{symbol}_return_model.pkl')
+                joblib.dump(scaler, f'ml_models/{symbol}_scaler.pkl')
+                
+            except Exception as e:
+                logging.error(f"Error training models for {symbol}: {e}")
+                continue
         
         logging.info("Model training completed.")
 
@@ -149,7 +166,7 @@ if __name__ == "__main__":
         exit()
     
     # Your symbols from config
-    symbols = ["EURAUD", "GBPJPY", "EURJPY", "USDJPY", "USDCHF", "GBPUSD", "EURUSD", "NZDUSD"]
+    symbols = ["EURAUD", "AUDUSD", "GBPJPY", "EURJPY", "USDJPY", "USDCHF", "GBPUSD", "EURUSD", "NZDUSD", "USDSEK", "USDCNH", "USDCAD"]
     
     ml_trainer = MLTrader(symbols)
     ml_trainer.train_models()

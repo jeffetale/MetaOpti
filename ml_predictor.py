@@ -47,15 +47,27 @@ class MLPredictor:
     
     def _calculate_rsi(self, prices, periods=14):
         """Calculate Relative Strength Index"""
-        # (same as in MLTrader)
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
     
     def _calculate_macd(self, prices, slow=26, fast=12, signal=9):
         """Calculate Moving Average Convergence Divergence"""
-        # (same as in MLTrader)
+        exp1 = prices.ewm(span=fast, adjust=False).mean()
+        exp2 = prices.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd - signal_line
     
     def _calculate_atr(self, df, period=14):
         """Calculate Average True Range"""
-        # (same as in MLTrader)
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        return ranges.max(axis=1).rolling(window=period).mean()
     
     def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
