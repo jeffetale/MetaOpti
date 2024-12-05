@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import logging
 from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES
 from models import trading_state
+from ml_predictor import MLPredictor
 
 # Set up logging
 logging.basicConfig(
@@ -113,30 +114,12 @@ def calculate_adx(df, period=14):
     df['DX'] = 100 * ((df['+DI'] - df['-DI']).abs() / (df['+DI'] + df['-DI']))
     return df['DX'].rolling(window=period).mean()
 
-def get_signal(symbol):
-    """Enhanced signal generation with multiple confirmations"""
-    if not should_trade_symbol(symbol):
-        return None, None, 0
-    
-    rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
-    if rates is None:
-        return None, None, 0
-        
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-    df = calculate_indicators(df, symbol)
-    
-    current = df.iloc[-1]
-    
-    # Skip if volatility is too low
-    if current.Volatility < trading_state.ta_params.volatility_threshold:
-        return None, None, 0
-    
-    # Calculate trend strength and quality
+def calculate_trend_score(current):
+    """Calculate trend score based on traditional indicators"""
     trend_score = 0
     
     # ADX trend strength
-    if current.ADX > 25:  # Strong trend
+    if current.ADX > 25:
         trend_score += 2
     
     # Moving average alignment
@@ -151,24 +134,65 @@ def get_signal(symbol):
     elif current.RSI > trading_state.ta_params.rsi_overbought and trend_score < 0:
         trend_score -= 2
     
-    # Calculate potential profit based on ATR and trend strength
-    potential_profit = current.ATR * abs(trend_score) * 10
+    return trend_score
+
+def get_signal(symbol):
+    """Enhanced signal generation with ML model integration"""
+    # Check if trading is allowed for the symbol
+    if not should_trade_symbol(symbol):
+        return None, None, 0
     
-    # Conservative mode adjustments
-    if trading_state.is_conservative_mode:
-        required_score = 3  # Higher requirement in conservative mode
-        potential_profit *= 0.8  # Reduce expected profit for safety
-    else:
-        required_score = 2
+    # Fetch rates for technical analysis
+    rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
+    if rates is None:
+        return None, None, 0
+        
+    df = pd.DataFrame(rates)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    df = calculate_indicators(df, symbol)
     
-    logging.info(f"{symbol} - Trend Score: {trend_score}, "
-                f"ADX: {current.ADX:.2f}, RSI: {current.RSI:.2f}, "
-                f"Potential Profit: {potential_profit:.5f}")
+    current = df.iloc[-1]
     
-    if trend_score >= required_score:
-        return "buy", current.ATR, potential_profit
-    elif trend_score <= -required_score:
-        return "sell", current.ATR, potential_profit
+    # Skip if volatility is too low
+    if current.Volatility < trading_state.ta_params.volatility_threshold:
+        return None, None, 0
+    
+    # Calculate traditional trend score
+    trend_score = calculate_trend_score(current)
+    
+    # Integrate ML predictions
+    try:
+        ml_predictor = MLPredictor(symbol)
+        ml_signal, ml_confidence, ml_predicted_return = ml_predictor.predict()
+        
+        # Adjust trend score based on ML predictions
+        if ml_signal == "buy" and ml_confidence > 0.6:
+            trend_score += 2  # Boost buy confidence
+        elif ml_signal == "sell" and ml_confidence > 0.6:
+            trend_score -= 2  # Boost sell confidence
+        
+        # Calculate potential profit
+        potential_profit = current.ATR * abs(trend_score) * 10
+        
+        # Conservative mode adjustments
+        if trading_state.is_conservative_mode:
+            required_score = 3
+            potential_profit *= 0.8
+        else:
+            required_score = 2
+        
+        logging.info(f"{symbol} - Trend Score: {trend_score}, "
+                     f"ML Signal: {ml_signal}, ML Confidence: {ml_confidence:.2f}, "
+                     f"Predicted Return: {ml_predicted_return:.5f}")
+        
+        # Final signal determination
+        if trend_score >= required_score:
+            return "buy", current.ATR, potential_profit
+        elif trend_score <= -required_score:
+            return "sell", current.ATR, potential_profit
+    
+    except Exception as e:
+        logging.error(f"ML prediction error for {symbol}: {e}")
     
     return None, None, 0
 
