@@ -7,6 +7,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
 from sklearn.metrics import classification_report, mean_squared_error
+from imblearn.over_sampling import SMOTE
 import joblib
 import logging
 import os
@@ -24,7 +25,7 @@ class MLTrader:
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 3000) # Fetch 3000 bars
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 40000) # Fetch 40000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)
@@ -63,10 +64,19 @@ class MLTrader:
         # Relative Performance Indicators
         df['relative_strength'] = df['close'] / df['close'].rolling(window=50).mean()
         
-        # Predict based on future price movements
+        # Predict based on future price movements with multiple thresholds
         df['future_close'] = df['close'].shift(-1)
         df['target_return'] = (df['future_close'] - df['close']) / df['close']
-        df['target_direction'] = np.where(df['target_return'] > 0, 1, 0)
+        
+        # Use multiple thresholds to create a more balanced classification
+        df['target_direction'] = np.select(
+            [
+                df['target_return'] > 0.0005,  # Significant positive movement
+                df['target_return'] < -0.0005  # Significant negative movement
+            ],
+            [1, -1],
+            default=0  # Neutral movement
+        )
         
         return df
 
@@ -178,7 +188,25 @@ class MLTrader:
         df = self.feature_engineering(df)
         df.dropna(inplace=True)
         
-        # Expanded feature set
+        # Detailed logging of data preparation
+        logging.info(f"Total data points for {symbol}: {len(df)}")
+        logging.info(f"Class Distribution before filtering: {df['target_direction'].value_counts(normalize=True)}")
+        
+        # Modified filtering to ensure some data remains
+        df_filtered = df[df['target_direction'] != 0]
+        
+        logging.info(f"Data points after filtering: {len(df_filtered)}")
+        logging.info(f"Class Distribution after filtering: {df_filtered['target_direction'].value_counts(normalize=True)}")
+
+        # Safety check for insufficient data
+        if len(df_filtered) < 100:  # Minimum threshold for training
+            logging.warning(f"Insufficient data for {symbol}. Need at least 100 data points.")
+            return None, None, None
+        
+        # Remap target_direction to binary (0 and 1)
+        df_filtered['target_direction_binary'] = np.where(df_filtered['target_direction'] > 0, 1, 0)
+        
+        # Prepare features and target
         features = [
             'SMA_10', 'SMA_50', 'EMA_20',  # Moving Averages
             'RSI', 'MACD', 'Stochastic', 'Williams_R',  # Momentum
@@ -189,60 +217,83 @@ class MLTrader:
             'relative_strength'
         ]
         
-        X = df[features]
-        y_direction = df['target_direction']
-        y_return = df['target_return']
-
-         # Check class distribution
-        print(f"Class Distribution: {df['target_direction'].value_counts(normalize=True)}")
-        
+        X = df_filtered[features]
+        y_direction = df_filtered['target_direction_binary']
+        y_return = df_filtered['target_return']
+                
         return X, y_direction, y_return
 
-
-    
     def train_models(self):
         for symbol in self.symbols:
             logging.info(f"Training models for {symbol}")
-            X, y_direction, y_return = self.prepare_data(symbol)
-            X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
-                X, y_direction, y_return, test_size=0.2, random_state=42
-            )
-            
-            # Scale features while preserving column names
-            scaler = StandardScaler()
-            X_train_scaled = pd.DataFrame(
-                scaler.fit_transform(X_train), 
-                columns=X_train.columns, 
-                index=X_train.index
-            )
-            X_test_scaled = pd.DataFrame(
-                scaler.transform(X_test), 
-                columns=X_test.columns, 
-                index=X_test.index
-            )
-            
-            # Hyperparameter tuning
-            dir_classifier = RandomForestClassifier(
-                n_estimators=200,  # Increased ensemble size
-                max_depth=15,  # Prevent overfitting
-                min_samples_split=10,
-                min_samples_leaf=5,
-                class_weight='balanced',
-                random_state=42
-            )
-            
-            return_predictor = GradientBoostingRegressor(
-                n_estimators=150,
-                learning_rate=0.1,
-                max_depth=5,
-                min_samples_split=20,
-                loss='huber',  # More robust to outliers
-                random_state=42
-            )
-
             try:
+                X, y_direction, y_return = self.prepare_data(symbol)
+                
+                # Additional safety checks
+                if X is None or len(X) == 0:
+                    logging.warning(f"Skipping {symbol} due to insufficient data")
+                    continue
+                
+                # If only one class exists, skip this symbol
+                if len(y_direction.unique()) < 2:
+                    logging.warning(f"Skipping {symbol} - only one class present")
+                    continue
+                
+                # Apply SMOTE for balancing
+                try:
+                    smote = SMOTE(random_state=42)
+                    X_resampled, y_direction_resampled = smote.fit_resample(X, y_direction)
+                    
+                    X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
+                        X_resampled, y_direction_resampled, y_return, test_size=0.2, random_state=42
+                    )
+                    
+                    # Log detailed resampled class distribution
+                    logging.info(f"Class Distribution after SMOTE:\n{pd.Series(y_direction_resampled).value_counts(normalize=True)}")
+                
+                except Exception as smote_error:
+                    logging.warning(f"SMOTE failed for {symbol}. Falling back to standard split. Error: {smote_error}")
+                    X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
+                        X, y_direction, y_return, test_size=0.2, random_state=42
+                    )
+                    
+                    # Log original class distribution
+                    logging.info(f"Class Distribution:\n{y_direction.value_counts(normalize=True)}")
+                
+                # Scale features while preserving column names
+                scaler = StandardScaler()
+                X_train_scaled = pd.DataFrame(
+                    scaler.fit_transform(X_train), 
+                    columns=X_train.columns, 
+                    index=X_train.index
+                )
+                X_test_scaled = pd.DataFrame(
+                    scaler.transform(X_test), 
+                    columns=X_test.columns, 
+                    index=X_test.index
+                )
+                
+                # Hyperparameter tuning
+                dir_classifier = RandomForestClassifier(
+                    n_estimators=200,  # Increased ensemble size
+                    max_depth=15,  # Prevent overfitting
+                    min_samples_split=10,
+                    min_samples_leaf=5,
+                    class_weight='balanced',  # Uncommented and enabled
+                    random_state=42
+                )
+                
+                return_predictor = GradientBoostingRegressor(
+                    n_estimators=150,
+                    learning_rate=0.1,
+                    max_depth=5,
+                    min_samples_split=20,
+                    loss='huber',  # More robust to outliers
+                    random_state=42
+                )
+
                 # Train models
-                dir_classifier.fit(X_train, y_dir_train)
+                dir_classifier.fit(X_train_scaled, y_dir_train)
                 return_predictor.fit(X_train, y_ret_train)
                 
                 # Evaluate models
@@ -273,11 +324,9 @@ class MLTrader:
                     joblib.dump(model_metadata, f'ml_models/{symbol}_metadata.pkl')
                 except Exception as e:
                     logging.error(f"Error saving metadata for {symbol}: {e}")
-
-
-                
+            
             except Exception as e:
-                logging.error(f"Error training models for {symbol}: {e}")
+                logging.error(f"Error processing {symbol}: {e}")
                 continue
         
         logging.info("Model training completed.")
