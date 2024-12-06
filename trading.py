@@ -278,8 +278,8 @@ def manage_open_positions(symbol):
                     logging.info(f"{symbol} position closed after 30 seconds due to negative profit")
                     adjust_trading_parameters(symbol, current_profit)
         else:
-            # Within first 30 seconds, only close if drops below -0.8
-            if current_profit <= -0.80:
+            # Within first 30 seconds, only close if drops below -5.8
+            if current_profit <= -5.80:
                 close_result = close_position(position)
                 if close_result:
                     logging.info(f"{symbol} position closed early due to significant profit drop")
@@ -420,7 +420,7 @@ def symbol_trader(symbol):
                                 state.is_restricted = True
                                 logging.warning(f"{symbol} restricted due to consecutive losses")
             
-            time.sleep(0.5)  # Check every 500ms
+            time.sleep(0.2)  # Check every 200ms
             
         except Exception as e:
             logging.error(f"Error in {symbol} trader: {e}")
