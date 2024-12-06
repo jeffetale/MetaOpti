@@ -60,9 +60,25 @@ def should_trade_symbol(symbol):
     """Determine if we should trade a symbol based on its performance"""
     state = trading_state.symbol_states[symbol]
 
-    if state.last_trade_time:
-        cooling_period = datetime.now() - state.last_trade_time
-        if cooling_period.total_seconds() < 300:  # 5-minute cooling period
+    # if state.last_trade_time:
+    #     cooling_period = datetime.now() - state.last_trade_time
+    #     if cooling_period.total_seconds() < 120:  # 2-minute cooling period
+    #         return False
+        
+    # Check recent trade performance
+    recent_trades = state.trades_history[-5:]  # Last 5 trades
+    if recent_trades:
+        recent_performance = sum(recent_trades)
+        
+        # If recent trades have been consistently losing
+        if recent_performance < 0:
+            logging.info(f"{symbol} trade suppressed due to recent poor performance")
+            return False
+        
+        # Prevent trading if recent trades are too volatile
+        trade_variance = max(recent_trades) - min(recent_trades)
+        if trade_variance > state.profit_threshold * 2:
+            logging.info(f"{symbol} trade suppressed due to high trade volatility")
             return False
     
     if state.is_restricted:
