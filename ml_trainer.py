@@ -71,8 +71,8 @@ class MLTrader:
         # Use multiple thresholds to create a more balanced classification
         df['target_direction'] = np.select(
             [
-                df['target_return'] > 0.0005,  # Significant positive movement
-                df['target_return'] < -0.0005  # Significant negative movement
+                df['target_return'] > df['target_return'].quantile(0.7),  # Top 30% positive
+                df['target_return'] < df['target_return'].quantile(0.3)   # Bottom 30% negative
             ],
             [1, -1],
             default=0  # Neutral movement
@@ -279,7 +279,7 @@ class MLTrader:
                     max_depth=15,  # Prevent overfitting
                     min_samples_split=10,
                     min_samples_leaf=5,
-                    class_weight='balanced',  # Uncommented and enabled
+                    class_weight='balanced', 
                     random_state=42
                 )
                 
