@@ -186,9 +186,9 @@ def get_signal(symbol):
     current = df.iloc[-1]
 
     # Volatility threshold check
-    if current.Volatility < trading_state.ta_params.volatility_threshold:
-        logging.info(f"{symbol} skipped due to low volatility")
-        return None, None, 0
+    # if current.Volatility < trading_state.ta_params.volatility_threshold:
+    #     logging.info(f"{symbol} skipped due to low volatility")
+    #     return None, None, 0
 
     # Initial trend score calculation
     trend_score = calculate_trend_score(current)
@@ -268,20 +268,21 @@ def manage_open_positions(symbol):
         
         current_profit = position.profit
         
-        # Check if position has been open for less than 30 seconds
-        if time_since_open < 30:
-            continue  # Keep position open during initial 30-second period
-        
-        # Close conditions after 30 seconds
-        if time_since_open >= 30 and (
-            current_profit < 0 or  # Negative after 30 seconds
-            current_profit <= -0.9  # Drops to -0.9 at any point
-        ):
-            close_result = close_position(position)
-            if close_result:
-                logging.info(f"{symbol} position closed. Reason: "
-                             f"{'Time elapsed' if time_since_open >= 30 else 'Profit drop'}")
-                adjust_trading_parameters(symbol, current_profit)
+        # Close conditions
+        if time_since_open >= 30:
+            # After 30 seconds, close if negative
+            if current_profit < 0:
+                close_result = close_position(position)
+                if close_result:
+                    logging.info(f"{symbol} position closed after 30 seconds due to negative profit")
+                    adjust_trading_parameters(symbol, current_profit)
+        else:
+            # Within first 30 seconds, only close if drops below -0.8
+            if current_profit <= -0.80:
+                close_result = close_position(position)
+                if close_result:
+                    logging.info(f"{symbol} position closed early due to significant profit drop")
+                    adjust_trading_parameters(symbol, current_profit)
 
 def close_position(position):
     """Close an open position"""
