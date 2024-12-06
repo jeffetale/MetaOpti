@@ -50,6 +50,11 @@ def adjust_trading_parameters(symbol, profit):
 def should_trade_symbol(symbol):
     """Determine if we should trade a symbol based on its performance"""
     state = trading_state.symbol_states[symbol]
+
+    if state.last_trade_time:
+        cooling_period = datetime.now() - state.last_trade_time
+        if cooling_period.total_seconds() < 60:  # 1-minute cooling period
+            return False
     
     if state.is_restricted:
         # Check if enough time has passed to retry
