@@ -29,7 +29,7 @@ class MLPredictor:
             self.scaler = joblib.load(f'ml_models/{self.symbol}_scaler.pkl')
             
             logging.info(f"Models loaded for {self.symbol}")
-            logging.info(f"Features: {self.features}")
+            #logging.info(f"Features: {self.features}")
         except FileNotFoundError:
             logging.error(f"Models for {self.symbol} not found. Train models first.")
             return None

@@ -25,7 +25,7 @@ class MLTrader:
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 40000) # Fetch 40000 bars
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 2000) # Fetch 2000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)

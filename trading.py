@@ -207,7 +207,7 @@ def get_signal(symbol):
                 return None, None, 0
 
         # Confidence and Prediction Quality Checks
-        if not (ml_signal and ml_confidence > 0.2):
+        if not (ml_signal and ml_confidence > 0.5):
             logging.info(f"{symbol} insufficient ML prediction confidence")
             return None, None, 0
 
@@ -254,7 +254,6 @@ def get_signal(symbol):
     return None, None, 0
 
 def manage_open_positions(symbol):
-    """Smart position management with trailing stops"""
     positions = mt5.positions_get(symbol=symbol)
     if not positions:
         return
@@ -262,31 +261,27 @@ def manage_open_positions(symbol):
     state = trading_state.symbol_states[symbol]
     
     for position in positions:
+        # Track position open time
+        position_open_time = datetime.fromtimestamp(position.time)
+        current_time = datetime.now()
+        time_since_open = (current_time - position_open_time).total_seconds()
+        
         current_profit = position.profit
-        state.total_profit = current_profit
         
-        # Update max profit if current profit is higher
-        if current_profit > state.max_profit:
-            state.max_profit = current_profit
+        # Check if position has been open for less than 30 seconds
+        if time_since_open < 30:
+            continue  # Keep position open during initial 30-second period
         
-        # Check if profit exceeds threshold
-        if current_profit >= state.profit_threshold:
-            trading_state.is_conservative_mode = True
-            
-            # Calculate trailing stop threshold
-            trailing_stop = state.max_profit * PROFIT_LOCK_PERCENTAGE
-            
-            # Close position if profit falls below trailing stop
-            if current_profit < trailing_stop:
-                close_position(position)
-                logging.info(f"{symbol} position closed to lock in profit: {current_profit}")
+        # Close conditions after 30 seconds
+        if time_since_open >= 30 and (
+            current_profit < 0 or  # Negative after 30 seconds
+            current_profit <= -0.9  # Drops to -0.9 at any point
+        ):
+            close_result = close_position(position)
+            if close_result:
+                logging.info(f"{symbol} position closed. Reason: "
+                             f"{'Time elapsed' if time_since_open >= 30 else 'Profit drop'}")
                 adjust_trading_parameters(symbol, current_profit)
-        
-        # Check for stop loss adjustment
-        elif current_profit < 0:
-            # Tighten stop loss if in significant loss
-            if current_profit < -state.profit_threshold * 0.5:
-                modify_stop_loss(position)
 
 def close_position(position):
     """Close an open position"""
