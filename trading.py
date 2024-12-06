@@ -29,6 +29,15 @@ def calculate_win_rate(trades):
 def adjust_trading_parameters(symbol, profit):
     """Dynamically adjust trading parameters based on performance"""
     state = trading_state.symbol_states[symbol]
+
+    # Add recent trade direction to memory
+    state.recent_trade_directions.append('buy' if profit > 0 else 'sell')
+    
+    # Limit memory size
+    if len(state.recent_trade_directions) > state.trade_direction_memory_size:
+        state.recent_trade_directions.pop(0)
+    
+    # Update consecutive losses and total profit
     state.trades_count += 1
     state.trades_history.append(profit)
     
@@ -53,7 +62,7 @@ def should_trade_symbol(symbol):
 
     if state.last_trade_time:
         cooling_period = datetime.now() - state.last_trade_time
-        if cooling_period.total_seconds() < 60:  # 1-minute cooling period
+        if cooling_period.total_seconds() < 300:  # 5-minute cooling period
             return False
     
     if state.is_restricted:

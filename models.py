@@ -15,6 +15,8 @@ class SymbolState:
         self.volume = INITIAL_VOLUME
         self.trades_count = 0
         self.profit_threshold = MIN_PROFIT_THRESHOLD
+        self.recent_trade_directions = []  # Track last few trade directions
+        self.trade_direction_memory_size = 3  # Remember last 3 trades
 
 class TAParams:
     # Dynamic parameters that adjust based on market conditions
