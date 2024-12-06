@@ -72,8 +72,9 @@ def should_trade_symbol(symbol):
         
         # If recent trades have been consistently losing
         if recent_performance < 0:
-            logging.info(f"{symbol} trade suppressed due to recent poor performance")
-            return False
+            if state.last_trade_time and (datetime.now() - state.last_trade_time).total_seconds() < 120:  # 2-minute cooling period
+                logging.info(f"{symbol} trade suppressed due to recent poor performance")
+                return False
         
         # Prevent trading if recent trades are too volatile
         trade_variance = max(recent_trades) - min(recent_trades)
