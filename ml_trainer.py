@@ -24,7 +24,7 @@ class MLTrader:
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 3000)
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 3000) # Fetch 3000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)
@@ -192,6 +192,9 @@ class MLTrader:
         X = df[features]
         y_direction = df['target_direction']
         y_return = df['target_return']
+
+         # Check class distribution
+        print(f"Class Distribution: {df['target_direction'].value_counts(normalize=True)}")
         
         return X, y_direction, y_return
 
@@ -224,6 +227,7 @@ class MLTrader:
                 max_depth=15,  # Prevent overfitting
                 min_samples_split=10,
                 min_samples_leaf=5,
+                class_weight='balanced',
                 random_state=42
             )
             
@@ -261,7 +265,10 @@ class MLTrader:
                     model_metadata = {
                         "features": features,
                         "scaler": scaler,
-                        "model_params": dir_classifier.get_params()
+                        "model_params": {
+                            "direction_model": dir_classifier.get_params(),
+                            "return_model": return_predictor.get_params()
+                        }
                     }
                     joblib.dump(model_metadata, f'ml_models/{symbol}_metadata.pkl')
                 except Exception as e:

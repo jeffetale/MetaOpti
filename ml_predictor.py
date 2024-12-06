@@ -20,36 +20,57 @@ class MLPredictor:
     def load_models(self):
         """Load pre-trained models for a specific symbol"""
         try:
+            # Load metadata first to get feature names
+            metadata = joblib.load(f'ml_models/{self.symbol}_metadata.pkl')
+            self.features = metadata.get('features', [])
+            
             self.direction_model = joblib.load(f'ml_models/{self.symbol}_direction_model.pkl')
             self.return_model = joblib.load(f'ml_models/{self.symbol}_return_model.pkl')
             self.scaler = joblib.load(f'ml_models/{self.symbol}_scaler.pkl')
-            self.features = joblib.load(f'ml_models/{self.symbol}_metadata.pkl')
+            
             logging.info(f"Models loaded for {self.symbol}")
+            logging.info(f"Features: {self.features}")
         except FileNotFoundError:
             logging.error(f"Models for {self.symbol} not found. Train models first.")
             return None
     
-    def extract_features(self, rates_frame: pd.DataFrame) -> np.ndarray:
+    def extract_features(self, rates_frame: pd.DataFrame) -> pd.DataFrame:
         """Extract features from price data"""
         # Technical indicators
         rates_frame['SMA_10'] = rates_frame['close'].rolling(window=10).mean()
         rates_frame['SMA_50'] = rates_frame['close'].rolling(window=50).mean()
+        rates_frame['EMA_20'] = rates_frame['close'].ewm(span=20, adjust=False).mean()
         
         # Momentum indicators
         rates_frame['RSI'] = self._calculate_rsi(rates_frame['close'])
         rates_frame['MACD'] = self._calculate_macd(rates_frame['close'])
+        rates_frame['Stochastic'] = self._calculate_stochastic(rates_frame)
+        rates_frame['Williams_R'] = self._calculate_williams_r(rates_frame)
         
         # Volatility
         rates_frame['ATR'] = self._calculate_atr(rates_frame)
+        rates_frame['Bollinger_Band_Width'] = self._calculate_bollinger_band_width(rates_frame)
+        
+        # Trend indicators
+        rates_frame['ADX'] = self._calculate_adx(rates_frame)
+        rates_frame['CCI'] = self._calculate_cci(rates_frame)
+        
+        # Volume-based indicators
+        rates_frame['OBV'] = self._calculate_obv(rates_frame)
+        rates_frame['MFI'] = self._calculate_money_flow_index(rates_frame)
         
         # Price changes
         rates_frame['price_change_1'] = rates_frame['close'].pct_change()
         rates_frame['price_change_5'] = rates_frame['close'].pct_change(5)
+        rates_frame['price_change_volatility'] = rates_frame['price_change_1'].rolling(window=10).std()
         
-        features = ['SMA_10', 'SMA_50', 'RSI', 'MACD', 'ATR', 
-                    'price_change_1', 'price_change_5']
+        # Relative performance
+        rates_frame['relative_strength'] = rates_frame['close'] / rates_frame['close'].rolling(window=50).mean()
         
-        return rates_frame[features].iloc[-1].values
+        # Select and order features exactly as during training
+        features_df = rates_frame[self.features].iloc[-1].to_frame().T
+        
+        return features_df
     
     def _calculate_rsi(self, prices, periods=14):
         """Calculate Relative Strength Index"""
@@ -152,7 +173,8 @@ class MLPredictor:
         return mfi
     
     def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50, threshold=0.6) -> Tuple[Optional[str], float, float]:
-        if not all([self.direction_model, self.return_model, self.scaler]):
+        """Predict trading signal and potential return"""
+        if not all([self.direction_model, self.return_model, self.scaler, self.features]):
             logging.error("Models not loaded. Cannot predict.")
             return None, 0, 0
         
@@ -165,50 +187,16 @@ class MLPredictor:
         rates_frame = pd.DataFrame(rates)
         
         try:
-            # Expanded feature engineering to match training
-            rates_frame['SMA_10'] = rates_frame['close'].rolling(window=10).mean()
-            rates_frame['SMA_50'] = rates_frame['close'].rolling(window=50).mean()
-            rates_frame['EMA_20'] = rates_frame['close'].ewm(span=20, adjust=False).mean()
+            # Extract features ensuring exact column names and order
+            features_df = self.extract_features(rates_frame)
             
-            rates_frame['RSI'] = self._calculate_rsi(rates_frame['close'])
-            rates_frame['MACD'] = self._calculate_macd(rates_frame['close'])
-            rates_frame['Stochastic'] = self._calculate_stochastic(rates_frame)
-            rates_frame['Williams_R'] = self._calculate_williams_r(rates_frame)
-            
-            rates_frame['ATR'] = self._calculate_atr(rates_frame)
-            rates_frame['Bollinger_Band_Width'] = self._calculate_bollinger_band_width(rates_frame)
-            
-            rates_frame['ADX'] = self._calculate_adx(rates_frame)
-            rates_frame['CCI'] = self._calculate_cci(rates_frame)
-            
-            # Ensure volume column exists
-            if 'volume' not in rates_frame.columns:
-                rates_frame['volume'] = 1
-            rates_frame['OBV'] = self._calculate_obv(rates_frame)
-            rates_frame['MFI'] = self._calculate_money_flow_index(rates_frame)
-            
-            rates_frame['price_change_1'] = rates_frame['close'].pct_change()
-            rates_frame['price_change_5'] = rates_frame['close'].pct_change(5)
-            rates_frame['price_change_volatility'] = rates_frame['price_change_1'].rolling(window=10).std()
-            
-            rates_frame['relative_strength'] = rates_frame['close'] / rates_frame['close'].rolling(window=50).mean()
-            
-            # Extract features
-            features = [
-                'SMA_10', 'SMA_50', 'EMA_20',  # Moving Averages
-                'RSI', 'MACD', 'Stochastic', 'Williams_R',  # Momentum
-                'ATR', 'Bollinger_Band_Width',  # Volatility
-                'ADX', 'CCI',  # Trend
-                'OBV', 'MFI',  # Volume
-                'price_change_1', 'price_change_5', 'price_change_volatility',
-                'relative_strength'
-            ]
-            
-            feature_values = rates_frame[features].iloc[-1].values
-            features_df = pd.DataFrame([feature_values], columns=features)
+            # Ensure column names match exactly
+            features_df.columns = self.features
+
+            #scale features
             scaled_features = self.scaler.transform(features_df)
             
-            # Rest of prediction logic remains the same
+            # Predict direction and return
             direction_prob = self.direction_model.predict_proba(scaled_features)[0]
             predicted_return = self.return_model.predict(scaled_features)[0]
             
