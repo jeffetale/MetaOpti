@@ -191,14 +191,17 @@ class MLPredictor:
             features_df = self.extract_features(rates_frame)
             
             # Ensure column names match exactly
-            features_df.columns = self.features
+            features_df = pd.DataFrame(features_df.values, columns=self.features)
 
-            #scale features
+            # Scale features
             scaled_features = self.scaler.transform(features_df)
             
+            # Convert scaled features back to DataFrame with correct feature names
+            scaled_features_df = pd.DataFrame(scaled_features, columns=self.features)
+            
             # Predict direction and return
-            direction_prob = self.direction_model.predict_proba(scaled_features)[0]
-            predicted_return = self.return_model.predict(scaled_features)[0]
+            direction_prob = self.direction_model.predict_proba(scaled_features_df)[0]
+            predicted_return = self.return_model.predict(scaled_features_df)[0]
             
             # Interpret predictions
             if direction_prob[1] > threshold:

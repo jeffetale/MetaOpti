@@ -68,7 +68,7 @@ class MLTrader:
         df['future_close'] = df['close'].shift(-1)
         df['target_return'] = (df['future_close'] - df['close']) / df['close']
         
-        # Use multiple thresholds to create a more balanced classification
+        # Use multiple thresholds to create a more balanced classification without leaving lots of neutral data
         df['target_direction'] = np.select(
             [
                 df['target_return'] > df['target_return'].quantile(0.7),  # Top 30% positive
