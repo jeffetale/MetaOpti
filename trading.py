@@ -169,63 +169,79 @@ def calculate_trend_score(current):
 
 def get_signal(symbol):
     """Enhanced signal generation with ML model integration"""
-    # Check if trading is allowed for the symbol
+    # Early exit checks
     if not should_trade_symbol(symbol):
         return None, None, 0
 
-    # Fetch rates for technical analysis
+    # Fetch and validate historical rates
     rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
     if rates is None:
+        logging.warning(f"No rates available for {symbol}")
         return None, None, 0
-        
+
+    # Prepare data for analysis
     df = pd.DataFrame(rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df = calculate_indicators(df, symbol)
-    
     current = df.iloc[-1]
-    
-    # Skip if volatility is too low
+
+    # Volatility threshold check
     if current.Volatility < trading_state.ta_params.volatility_threshold:
+        logging.info(f"{symbol} skipped due to low volatility")
         return None, None, 0
 
-    # Calculate traditional trend score
+    # Initial trend score calculation
     trend_score = calculate_trend_score(current)
-
     state = trading_state.symbol_states[symbol]
 
-    # Integrate ML predictions
     try:
+        # ML Prediction Integration
         ml_predictor = MLPredictor(symbol)
         ml_signal, ml_confidence, ml_predicted_return = ml_predictor.predict()
 
-        # Additional check for trade direction repetition
+        # Trade Direction Repetition Prevention
         if state.recent_trade_directions:
             recent_direction_count = state.recent_trade_directions.count(ml_signal)
-            if recent_direction_count >= 2:  # If same direction repeated twice recently
-                logging.info(f"{symbol} suppressing {ml_signal} signal due to recent similar trades")
+            if recent_direction_count >= 2:
+                logging.info(f"{symbol} suppressing {ml_signal} due to recent similar trades")
                 return None, None, 0
 
-        # Adjust trend score based on ML predictions
+        # Confidence and Prediction Quality Checks
+        if not (ml_signal and ml_confidence > 0.2):
+            logging.info(f"{symbol} insufficient ML prediction confidence")
+            return None, None, 0
+
+        # Predicted Return Quality
+        if abs(ml_predicted_return) < 0.0001 or ml_predicted_return < 0:
+            logging.info(f"{symbol} suppressed: low/negative predicted return")
+            return None, None, 0
+
+        # ML Signal Impact on Trend Score
         if ml_signal == "buy" and ml_confidence > 0.6:
             trend_score += 2  # Boost buy confidence
         elif ml_signal == "sell" and ml_confidence > 0.6:
             trend_score -= 2  # Boost sell confidence
-        
-        # Calculate potential profit
+
+        # Potential Profit Calculation
         potential_profit = current.ATR * abs(trend_score) * 10
-        
-        # Conservative mode adjustments
+
+        # Conservative Mode Adjustments
         if trading_state.is_conservative_mode:
             required_score = 3
             potential_profit *= 0.8
         else:
             required_score = 2
-        
-        logging.info(f"{symbol} - Trend Score: {trend_score}, "
-                     f"ML Signal: {ml_signal}, ML Confidence: {ml_confidence:.2f}, "
-                     f"Predicted Return: {ml_predicted_return:.5f}")
-        
-        # Final signal determination
+
+        # Detailed Logging
+        logging.info(
+            f"{symbol} Analysis: "
+            f"Trend Score: {trend_score}, "
+            f"ML Signal: {ml_signal}, "
+            f"Confidence: {ml_confidence:.2f}, "
+            f"Predicted Return: {ml_predicted_return:.5f}"
+        )
+
+        # Final Signal Determination
         if trend_score >= required_score:
             return "buy", current.ATR, potential_profit
         elif trend_score <= -required_score:
@@ -233,7 +249,8 @@ def get_signal(symbol):
 
     except Exception as e:
         logging.error(f"ML prediction error for {symbol}: {e}")
-    
+        return None, None, 0
+
     return None, None, 0
 
 def manage_open_positions(symbol):
