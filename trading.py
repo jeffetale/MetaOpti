@@ -156,7 +156,7 @@ def get_signal(symbol):
     # Check if trading is allowed for the symbol
     if not should_trade_symbol(symbol):
         return None, None, 0
-    
+
     # Fetch rates for technical analysis
     rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
     if rates is None:
@@ -171,15 +171,24 @@ def get_signal(symbol):
     # Skip if volatility is too low
     if current.Volatility < trading_state.ta_params.volatility_threshold:
         return None, None, 0
-    
+
     # Calculate traditional trend score
     trend_score = calculate_trend_score(current)
-    
+
+    state = trading_state.symbol_states[symbol]
+
     # Integrate ML predictions
     try:
         ml_predictor = MLPredictor(symbol)
         ml_signal, ml_confidence, ml_predicted_return = ml_predictor.predict()
-        
+
+        # Additional check for trade direction repetition
+        if state.recent_trade_directions:
+            recent_direction_count = state.recent_trade_directions.count(ml_signal)
+            if recent_direction_count >= 2:  # If same direction repeated twice recently
+                logging.info(f"{symbol} suppressing {ml_signal} signal due to recent similar trades")
+                return None, None, 0
+
         # Adjust trend score based on ML predictions
         if ml_signal == "buy" and ml_confidence > 0.6:
             trend_score += 2  # Boost buy confidence
@@ -205,7 +214,7 @@ def get_signal(symbol):
             return "buy", current.ATR, potential_profit
         elif trend_score <= -required_score:
             return "sell", current.ATR, potential_profit
-    
+
     except Exception as e:
         logging.error(f"ML prediction error for {symbol}: {e}")
     
