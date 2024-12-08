@@ -2,7 +2,7 @@
 
 import numpy as np
 import pandas as pd
-import MetaTrader5 as mt5
+# import MetaTrader5 as mt5
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
@@ -12,6 +12,7 @@ import joblib
 import logging
 import os
 from datetime import datetime, timedelta
+from config import mt5
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 

@@ -2,10 +2,11 @@
 
 import numpy as np
 import pandas as pd
-import MetaTrader5 as mt5
+# import MetaTrader5 as mt5
 import joblib
 import logging
 from typing import Tuple, Optional
+from config import mt5
 
 class MLPredictor:
     def __init__(self, symbol):

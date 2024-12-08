@@ -1,11 +1,11 @@
 # trading.py
 
-import MetaTrader5 as mt5
+# import MetaTrader5 as mt5
 import pandas as pd
 import time
 from datetime import datetime
 import logging
-from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES
+from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES, mt5
 from models import trading_state
 from ml_predictor import MLPredictor
 
