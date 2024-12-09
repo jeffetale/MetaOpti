@@ -1,7 +1,5 @@
-# ml_predictor.py
-
-import numpy as np
 import pandas as pd
+import numpy as np
 # import MetaTrader5 as mt5
 import joblib
 import logging
@@ -217,4 +215,3 @@ class MLPredictor:
         except Exception as e:
             logging.error(f"Prediction error: {e}")
             return None, 0, 0
-

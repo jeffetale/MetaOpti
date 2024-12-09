@@ -3,3 +3,4 @@ trading_bot.log
 manual_close.py
 __pycache__/
 ml_models/
+test.py
