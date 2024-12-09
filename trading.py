@@ -215,12 +215,57 @@ def get_signal(symbol):
                 return None, None, 0
             else:
                 state.neutral_start_time = None  # Reset neutral state
-        
-        logging.info(f"{symbol} - Trend Score: {trend_score}, "
-                     f"**********ML Confidence: {ml_confidence:.2f}, "
-                     f"**********Predicted Return: {ml_predicted_return:.5f}")
 
-        
+        # Trade Direction Repetition Prevention
+        if state.recent_trade_directions:
+            recent_direction_count = state.recent_trade_directions.count(ml_signal)
+            if recent_direction_count >= 2:
+                logging.info(
+                    f"{symbol} suppressing {ml_signal} due to recent similar trades"
+                )
+                return None, None, 0
+
+        # Confidence and Prediction Quality Checks
+        if not (ml_signal and ml_confidence > 0.5):
+            logging.info(f"{symbol} insufficient ML prediction confidence")
+            return None, None, 0
+
+        # Predicted Return Quality
+        if abs(ml_predicted_return) < 0.0001 or ml_predicted_return < 0:
+            logging.info(f"{symbol} suppressed: low/negative predicted return")
+            return None, None, 0
+
+        # ML Signal Impact on Trend Score
+        if ml_signal == "buy" and ml_confidence > 0.6:
+            trend_score += 2  # Boost buy confidence
+        elif ml_signal == "sell" and ml_confidence > 0.6:
+            trend_score -= 2  # Boost sell confidence
+
+        # Potential Profit Calculation
+        potential_profit = current.ATR * abs(trend_score) * 10
+
+        # Conservative Mode Adjustments
+        if trading_state.is_conservative_mode:
+            required_score = 3
+            potential_profit *= 0.8
+        else:
+            required_score = 2
+
+        # Detailed Logging
+        logging.info(
+            f"********{symbol} Analysis: "
+            f"********Trend Score: {trend_score}, "
+            f"********ML Signal: {ml_signal}, "
+            f"********Confidence: {ml_confidence:.2f}, "
+            f"********Predicted Return: {ml_predicted_return:.5f}"
+        )
+
+        # Final Signal Determination
+        if trend_score >= required_score:
+            return "buy", current.ATR, potential_profit
+        elif trend_score <= -required_score:
+            return "sell", current.ATR, potential_profit
+
         return ml_signal, current.ATR, ml_predicted_return
 
     except Exception as e:
