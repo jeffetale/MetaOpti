@@ -202,23 +202,23 @@ def get_signal(symbol):
             or abs(ml_predicted_return) < 0.0001
         ):
             logging.info(f"{symbol} entered NEUTRAL state")
-        #     state.neutral_start_time = datetime.now()
-        #     return "neutral", current.ATR, 0
+            state.neutral_start_time = datetime.now()
+            return "neutral", current.ATR, 0
 
-        # # Check if symbol is in neutral hold
-        # if state.neutral_start_time:
-        #     neutral_duration = (
-        #         datetime.now() - state.neutral_start_time
-        #     ).total_seconds()
-        #     if neutral_duration < NEUTRAL_HOLD_DURATION:
-        #         logging.info(f"{symbol} still in neutral hold")
-        #         return None, None, 0
-        #     else:
-        #         state.neutral_start_time = None  # Reset neutral state
+        # Check if symbol is in neutral hold
+        if state.neutral_start_time:
+            neutral_duration = (
+                datetime.now() - state.neutral_start_time
+            ).total_seconds()
+            if neutral_duration < NEUTRAL_HOLD_DURATION:
+                logging.info(f"{symbol} still in neutral hold")
+                return None, None, 0
+            else:
+                state.neutral_start_time = None  # Reset neutral state
         
         logging.info(f"{symbol} - Trend Score: {trend_score}, "
-                     f"ML Confidence: {ml_confidence:.2f}, "
-                     f"Predicted Return: {ml_predicted_return:.5f}")
+                     f"**********ML Confidence: {ml_confidence:.2f}, "
+                     f"**********Predicted Return: {ml_predicted_return:.5f}")
 
         
         return ml_signal, current.ATR, ml_predicted_return
@@ -394,8 +394,8 @@ def place_order(symbol, direction, atr, volume):
             logging.error(f"Second attempt failed for {symbol}")
             return False
 
-    logging.info(f"Order placed successfully for {symbol}: {direction.upper()} "
-                f"Volume: {volume}, Price: {price}, SL: {sl}, TP: {tp}")
+    logging.info(f"====> Order placed successfully for {symbol}: {direction.upper()} "
+                f"=====>Volume: {volume}, Price: {price}, SL: {sl}, TP: {tp}")
     return True
 
 
