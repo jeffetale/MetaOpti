@@ -18,14 +18,14 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MLTrader:
-    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M1, look_back=50):
+    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M1, look_back=30):   # timeframe= 1 minute and look_back=50 candlesticks
         self.symbols = symbols
         self.timeframe = timeframe
         self.look_back = look_back
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 4000) # Fetch 4000 bars
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 5000) # Fetch 5000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)
@@ -187,11 +187,11 @@ class MLTrader:
         df = self.fetch_historical_data(symbol)
         df = self.feature_engineering(df)
         df.dropna(inplace=True)
-        
+
         # Detailed logging of data preparation
         logging.info(f"Total data points for {symbol}: {len(df)}")
         logging.info(f"Class Distribution before filtering: {df['target_direction'].value_counts(normalize=True)}")
-        
+
         # Modified filtering to ensure some data remains
         df_filtered = df[df['target_direction'] != 0]
         
@@ -202,10 +202,10 @@ class MLTrader:
         if len(df_filtered) < 100:  # Minimum threshold for training
             logging.warning(f"Insufficient data for {symbol}. Need at least 100 data points.")
             return None, None, None
-        
+
         # Remap target_direction to binary (0 and 1)
-        df_filtered['target_direction_binary'] = np.where(df_filtered['target_direction'] > 0, 1, 0)
-        
+        df_filtered.loc[:, 'target_direction_binary'] = np.where(df_filtered['target_direction'] > 0, 1, 0)
+
         # Prepare features and target
         features = [
             'SMA_10', 'SMA_50', 'EMA_20',  # Moving Averages
@@ -216,12 +216,17 @@ class MLTrader:
             'price_change_1', 'price_change_5', 'price_change_volatility',
             'relative_strength'
         ]
-        
+
         X = df_filtered[features]
         y_direction = df_filtered['target_direction_binary']
         y_return = df_filtered['target_return']
-                
+        
+        # Ensure indices are aligned
+        X, y_direction = X.align(y_direction, join='inner', axis=0)
+        X, y_return = X.align(y_return, join='inner', axis=0)
+
         return X, y_direction, y_return
+
 
     def train_models(self):
         for symbol in self.symbols:
@@ -244,8 +249,11 @@ class MLTrader:
                     smote = SMOTE(random_state=42)
                     X_resampled, y_direction_resampled = smote.fit_resample(X, y_direction)
                     
+                    # Align resampled X with y_return for consistent samples
+                    X_resampled, y_return_resampled = X_resampled.align(y_return, join='inner', axis=0)
+                    
                     X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
-                        X_resampled, y_direction_resampled, y_return, test_size=0.2, random_state=42
+                        X_resampled, y_direction_resampled, y_return_resampled, test_size=0.2, random_state=42
                     )
                     
                     # Log detailed resampled class distribution
