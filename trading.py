@@ -5,9 +5,10 @@ import pandas as pd
 import time
 from datetime import datetime
 import logging
-from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES, mt5, POSITION_REVERSAL_THRESHOLD, NEUTRAL_CONFIDENCE_THRESHOLD, NEUTRAL_HOLD_DURATION
+from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES, mt5, POSITION_REVERSAL_THRESHOLD, NEUTRAL_CONFIDENCE_THRESHOLD, NEUTRAL_HOLD_DURATION, SHUTDOWN_EVENT
 from models import trading_state
 from ml_predictor import MLPredictor
+
 
 # Set up logging
 logging.basicConfig(
@@ -333,40 +334,6 @@ def manage_open_positions(symbol):
                     )
                     adjust_trading_parameters(symbol, current_profit)
 
-
-def close_position(position):
-    """Close an open position"""
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "position": position.ticket,
-        "symbol": position.symbol,
-        "volume": position.volume,
-        "type": mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
-        "price": mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask,
-        "deviation": 20,
-        "magic": 234000,
-        "comment": "close position",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-    
-    result = mt5.order_send(request)
-    return result.retcode == mt5.TRADE_RETCODE_DONE
-
-def modify_stop_loss(position):
-    """Modify position's stop loss"""
-    new_sl = position.price_open if position.profit < 0 else position.sl
-    
-    request = {
-        "action": mt5.TRADE_ACTION_SLTP,
-        "position": position.ticket,
-        "sl": new_sl,
-        "tp": position.tp
-    }
-    
-    result = mt5.order_send(request)
-    return result.retcode == mt5.TRADE_RETCODE_DONE
-
 def place_order(symbol, direction, atr, volume):
     """
     Place a trading order with dynamic stop loss and take profit based on ATR
@@ -386,7 +353,7 @@ def place_order(symbol, direction, atr, volume):
     volume = max(symbol_info.volume_min, min(volume, symbol_info.volume_max))
 
     # Calculate order parameters
-    sl_distance = atr * 5  # Stop loss at 5 * ATR
+    sl_distance = atr * 10  # Stop loss at 10 * ATR
     tp_distance = atr * 2.5  # Take profit at 2.5 * ATR
 
     if direction == "buy":
@@ -445,21 +412,28 @@ def place_order(symbol, direction, atr, volume):
 
 
 def symbol_trader(symbol):
-    """Enhanced symbol trading loop with neutral state handling"""
-    while True:
+    """
+    Enhanced symbol trading loop with neutral state handling and effective shutdown mechanism
+
+    Args:
+        symbol (str): Trading symbol to manage
+    """
+    logging.info(f"Starting trading thread for {symbol}")
+
+    while not SHUTDOWN_EVENT.is_set():
         try:
-            # Manage existing positions
+            # Only manage positions if shutdown has not been initiated
             manage_open_positions(symbol)
 
-            # Check if we should look for new trades
-            if should_trade_symbol(symbol):
+            # Prevent new trades during shutdown
+            if not SHUTDOWN_EVENT.is_set() and should_trade_symbol(symbol):
                 positions = mt5.positions_get(symbol=symbol)
 
                 if not positions:  # No open positions for this symbol
                     signal, atr, potential_profit = get_signal(symbol)
 
-                    # Skip trading if neutral
-                    if signal == "neutral":
+                    # Skip trading if neutral or shutdown is in progress
+                    if signal == "neutral" or SHUTDOWN_EVENT.is_set():
                         continue
 
                     if signal and atr and potential_profit > 0:
@@ -480,5 +454,95 @@ def symbol_trader(symbol):
             time.sleep(0.5)  # Check every 500ms
 
         except Exception as e:
-            logging.error(f"Error in {symbol} trader: {e}")
+            if not SHUTDOWN_EVENT.is_set():
+                logging.error(f"Error in {symbol} trader: {e}")
             time.sleep(1)
+
+    logging.info(f"Trading thread for {symbol} has stopped")
+
+
+def close_position(position):
+    """
+    Close an open position with enhanced error handling and logging
+
+    Args:
+        position: MT5 position object to close
+
+    Returns:
+        bool: True if position closed successfully, False otherwise
+    """
+    try:
+        # Additional pre-checks
+        if not mt5.initialize():
+            logging.error(
+                f"MT5 not initialized when trying to close position {position.ticket}"
+            )
+            return False
+
+        # Get current market tick information
+        tick = mt5.symbol_info_tick(position.symbol)
+        if tick is None:
+            logging.error(f"Could not get tick information for {position.symbol}")
+            return False
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "volume": position.volume,
+            "type": (
+                mt5.ORDER_TYPE_SELL
+                if position.type == mt5.ORDER_TYPE_BUY
+                else mt5.ORDER_TYPE_BUY
+            ),
+            "price": (tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask),
+            "deviation": 50,  # Increased deviation
+            "magic": 234000,
+            "comment": "close position",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        # Log detailed request information for debugging
+        logging.debug(f"Close position request for {position.ticket}: {request}")
+
+        # Send order with explicit timeout
+        result = mt5.order_send(request)
+
+        # Comprehensive error checking
+        if result is None:
+            logging.error(
+                f"Failed to send close order for position {position.ticket}. Returned None."
+            )
+            return False
+
+        # Check return code
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logging.info(f"Successfully closed position {position.ticket}")
+            return True
+        else:
+            logging.warning(
+                f"Failed to close position {position.ticket}. "
+                f"Return code: {result.retcode}, "
+                f"Comment: {result.comment}"
+            )
+            return False
+
+    except Exception as e:
+        logging.error(f"Exception when closing position {position.ticket}: {e}")
+        return False
+
+
+def modify_stop_loss(position):
+    """Modify position's stop loss"""
+    new_sl = position.price_open if position.profit < 0 else position.sl
+
+    request = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": position.ticket,
+        "sl": new_sl,
+        "tp": position.tp,
+    }
+
+    result = mt5.order_send(request)
+    return result.retcode == mt5.TRADE_RETCODE_DONE
