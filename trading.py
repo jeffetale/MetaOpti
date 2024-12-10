@@ -424,7 +424,6 @@ def place_order(symbol, direction, atr, volume, trading_stats=None, is_ml_signal
 def symbol_trader(symbol):
     # Symbol trading loop with neutral state handling and effective shutdown mechanism
     logging.info(f"Starting trading thread for {symbol}")
-    global trading_stats
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -456,11 +455,7 @@ def symbol_trader(symbol):
                                 logging.warning(
                                     f"{symbol} restricted due to consecutive losses"
                                 )
-            if success and trading_stats:
-                # Pass trading_stats to place_order or other relevant functions
-                place_order(
-                    symbol, signal, atr, state.volume, trading_stats, is_ml_signal=True
-                )
+
             time.sleep(1)  # Check every 1000ms
 
         except Exception as e:
