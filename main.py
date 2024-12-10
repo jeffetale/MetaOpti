@@ -6,6 +6,9 @@ import sys
 
 from config import initialize_mt5, SYMBOLS, SHUTDOWN_EVENT
 from trading import logging, symbol_trader, mt5, trading_state, close_position
+from models import TradingStatistics
+
+global trading_stats
 
 
 def signal_handler(signum, frame):
@@ -27,9 +30,7 @@ def initialize_signal_handling():
 
 
 def close_all_positions():
-    """
-    Close all open positions with multiple attempts and forced closure
-    """
+    """Close all open positions with multiple attempts and forced closures"""   
     # Verify MT5 connection before attempting to close positions
     if not mt5.initialize():
         logging.error("MT5 not initialized during close_all_positions")
@@ -89,37 +90,6 @@ def close_all_positions():
     return total_profit
 
 
-def shutdown(threads):
-    """
-    Perform clean shutdown of the trading bot
-
-    Args:
-        threads (list): List of trading threads to terminate
-    """
-    logging.info("Initiating shutdown sequence...")
-
-    # Set shutdown event to stop all trading threads
-    SHUTDOWN_EVENT.set()
-
-    # Wait for threads to finish
-    for thread in threads:
-        thread.join(timeout=5)  # Wait up to 5 seconds for each thread
-
-    # Close all positions
-    total_profit = close_all_positions()
-    logging.info(f"Total profit from closed positions: {total_profit}")
-
-    # Shutdown MT5 connection
-    mt5.shutdown()
-    logging.info("MT5 connection closed")
-
-    # Final status log
-    logging.info("Trading bot shutdown complete")
-
-    # Explicitly exit the program
-    sys.exit(0)
-
-
 def main():
     # Set up signal handling
     initialize_signal_handling()
@@ -128,6 +98,9 @@ def main():
     if not initialize_mt5():
         logging.error("Failed to initialize MT5")
         return
+
+    # Get initial balance before starting trading
+    initial_balance = mt5.account_info().balance
 
     # Symbol information and selection
     for symbol in SYMBOLS:
@@ -153,7 +126,10 @@ def main():
         thread.daemon = True
         thread.start()
         threads.append(thread)
-        logging.info(f"Started trading thread for {symbol}")
+
+    # Initialize trading statistics
+    global trading_stats
+    trading_stats = TradingStatistics(SYMBOLS)
 
     # Main monitoring loop
     try:
@@ -173,13 +149,12 @@ def main():
                     state.win_rate for state in trading_state.symbol_states.values()
                 )
 
-                logging.info(
-                    f"####### Account Status - Balance: {account_dict['balance']}, "
-                    f"Equity: {account_dict['equity']}, "
-                    f"Profit: {total_profit}, "
-                    f"Active Symbols: {active_symbols}, "
-                    f"Avg Win Rate: {avg_win_rate:.2%} ######"
-                )
+                logging.info("####### Account Status #######")
+                logging.info(f"**** Balance: {account_dict['balance']} ****")
+                logging.info(f"**** Equity: {account_dict['equity']} ****")
+                logging.info(f"**** Profit: {total_profit} ****")
+                logging.info(f"**** Active Symbols: {active_symbols} ****")
+                logging.info(f"**** Avg Win Rate: {avg_win_rate:.2%} ****")
 
                 # Global state management
                 trading_state.global_profit = total_profit
@@ -192,7 +167,43 @@ def main():
 
     finally:
         # Ensure shutdown happens even if an exception occurs
-        shutdown(threads)
+        shutdown(threads, initial_balance)
+
+
+def shutdown(threads, initial_balance):
+    """Perform clean shutdown of the trading bot"""
+    logging.info("Initiating shutdown sequence...")
+
+    # Set shutdown event to stop all trading threads
+    SHUTDOWN_EVENT.set()
+
+    # Wait for threads to finish
+    for thread in threads:
+        thread.join(timeout=5)  # Wait up to 5 seconds for each thread
+
+    # Close all positions
+    total_profit = close_all_positions()
+    logging.info(f"Total profit from closed positions: {total_profit}")
+
+    # Get final balance
+    final_balance = mt5.account_info().balance
+
+    # Log final statistics
+    global trading_stats
+    if trading_stats is None:
+        trading_stats = TradingStatistics(SYMBOLS)
+
+    trading_stats.log_final_statistics(initial_balance, final_balance)
+
+    # Shutdown MT5 connection
+    mt5.shutdown()
+    logging.info("MT5 connection closed")
+
+    # Final status log
+    logging.info("Trading bot shutdown complete")
+
+    # Explicitly exit the program
+    sys.exit(0)
 
 
 if __name__ == "__main__":

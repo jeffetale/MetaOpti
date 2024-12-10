@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 import logging
 from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES, mt5, POSITION_REVERSAL_THRESHOLD, NEUTRAL_CONFIDENCE_THRESHOLD, NEUTRAL_HOLD_DURATION, SHUTDOWN_EVENT
-from models import trading_state
+from models import trading_state, TradingStatistics
 from ml_predictor import MLPredictor
 
 
@@ -43,7 +43,7 @@ def adjust_trading_parameters(symbol, profit):
     state.trades_history.append(profit)
     
     # Update win rate
-    state.win_rate = calculate_win_rate(state.trades_history[-20:])  # Consider last 20 trades
+    state.win_rate = calculate_win_rate(state.trades_history[-10:])  # Consider last 10 trades
     
     # Adjust volume based on performance
     if state.win_rate > 0.6:  # Increase volume if winning consistently
@@ -67,7 +67,7 @@ def should_trade_symbol(symbol):
     #         return False
         
     # Check recent trade performance
-    recent_trades = state.trades_history[-5:]  # Last 5 trades
+    recent_trades = state.trades_history[-2:]  # Last 2 trades
     if recent_trades:
         recent_performance = sum(recent_trades)
         
@@ -274,7 +274,7 @@ def get_signal(symbol):
         return None, None, 0
 
 
-def manage_open_positions(symbol):
+def manage_open_positions(symbol, trading_stats=None):
     """Enhanced position management with position reversal"""
     positions = mt5.positions_get(symbol=symbol)
     if not positions:
@@ -310,9 +310,15 @@ def manage_open_positions(symbol):
 
                 # Place new position in opposite direction
                 place_order(symbol, reversal_direction, atr, state.volume * 1.2)
+                logging.info(
+                    f"|||||||| {symbol} new position opened in opposite direction: {reversal_direction} |||||||||"
+                )
 
                 # Adjust trading parameters
                 adjust_trading_parameters(symbol, current_profit)
+                
+                if close_result and trading_stats:
+                    trading_stats.log_position_reversal(symbol)
 
                 continue
 
@@ -322,7 +328,7 @@ def manage_open_positions(symbol):
                 close_result = close_position(position)
                 if close_result:
                     logging.info(
-                        f"{symbol} position closed after 30 seconds due to negative profit"
+                        f"------- {symbol} position closed after 30 seconds due to negative profit --------"
                     )
                     adjust_trading_parameters(symbol, current_profit)
         else:
@@ -330,11 +336,12 @@ def manage_open_positions(symbol):
                 close_result = close_position(position)
                 if close_result:
                     logging.info(
-                        f"{symbol} position closed early due to significant profit drop"
+                        f"-------- {symbol} position closed early due to significant profit drop --------"
                     )
                     adjust_trading_parameters(symbol, current_profit)
 
-def place_order(symbol, direction, atr, volume):
+
+def place_order(symbol, direction, atr, volume, trading_stats=None, is_ml_signal=False):
     """Place a trading order with dynamic stop loss and take profit based on ATR"""
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
@@ -406,12 +413,18 @@ def place_order(symbol, direction, atr, volume):
 
     logging.info(f"====> Order placed successfully for {symbol}: {direction.upper()} "
                 f"=====>Volume: {volume}, Price: {price}, SL: {sl}, TP: {tp}")
-    return True
+
+    # if success and trading_stats:
+    #     # Simulated profit for logging
+    #     simulated_profit = potential_profit if direction == "buy" else -potential_profit
+    #     trading_stats.log_trade(symbol, direction, simulated_profit, is_ml_signal)
+    # return True
 
 
 def symbol_trader(symbol):
-    #Symbol trading loop with neutral state handling and effective shutdown mechanism
+    # Symbol trading loop with neutral state handling and effective shutdown mechanism
     logging.info(f"Starting trading thread for {symbol}")
+    global trading_stats
 
     while not SHUTDOWN_EVENT.is_set():
         try:
@@ -443,7 +456,11 @@ def symbol_trader(symbol):
                                 logging.warning(
                                     f"{symbol} restricted due to consecutive losses"
                                 )
-
+            if success and trading_stats:
+                # Pass trading_stats to place_order or other relevant functions
+                place_order(
+                    symbol, signal, atr, state.volume, trading_stats, is_ml_signal=True
+                )
             time.sleep(1)  # Check every 1000ms
 
         except Exception as e:

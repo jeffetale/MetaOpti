@@ -1,5 +1,7 @@
 # models.py
 
+import pandas as pd
+import numpy as np
 from collections import defaultdict
 from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD
 
@@ -42,4 +44,89 @@ class TradingState:
         self.manual_intervention_cooldown = 0
         self.last_manual_intervention_time = None
 
+
+class TradingStatistics:
+    def __init__(self, symbols):
+        self.symbols = symbols
+        self.reset_statistics()
+
+    def reset_statistics(self):
+        """Reset all trading statistics to initial state"""
+        self.total_trades = {symbol: 0 for symbol in self.symbols}
+        self.buy_trades = {symbol: 0 for symbol in self.symbols}
+        self.sell_trades = {symbol: 0 for symbol in self.symbols}
+
+        self.symbol_profits = {symbol: [] for symbol in self.symbols}
+        self.ml_signals_count = 0
+        self.calculated_signals_count = 0
+
+        self.position_reversals = {symbol: 0 for symbol in self.symbols}
+
+        # Comprehensive tracking arrays
+        self.profit_array = []
+        self.symbol_profit_array = {symbol: [] for symbol in self.symbols}
+
+    def log_trade(self, symbol, direction, profit, is_ml_signal):
+        """Log individual trade details"""
+        self.total_trades[symbol] += 1
+        if direction == "buy":
+            self.buy_trades[symbol] += 1
+        else:
+            self.sell_trades[symbol] += 1
+
+        self.symbol_profits[symbol].append(profit)
+        self.profit_array.append(profit)
+        self.symbol_profit_array[symbol].append(profit)
+
+        # Signal type tracking
+        if is_ml_signal:
+            self.ml_signals_count += 1
+        else:
+            self.calculated_signals_count += 1
+
+    def log_position_reversal(self, symbol):
+        """Log position reversals for a symbol"""
+        self.position_reversals[symbol] += 1
+
+    def get_statistics(self):
+        """Generate comprehensive trading statistics"""
+        stats = {
+            "total_trades_by_symbol": self.total_trades,
+            "buy_trades_by_symbol": self.buy_trades,
+            "sell_trades_by_symbol": self.sell_trades,
+            "highest_total_profit": max(self.profit_array) if self.profit_array else 0,
+            "lowest_total_profit": min(self.profit_array) if self.profit_array else 0,
+            "highest_symbol_profit": {
+                symbol: max(profits) if profits else 0
+                for symbol, profits in self.symbol_profit_array.items()
+            },
+            "lowest_symbol_profit": {
+                symbol: min(profits) if profits else 0
+                for symbol, profits in self.symbol_profit_array.items()
+            },
+            "most_traded_symbol": max(self.total_trades, key=self.total_trades.get),
+            "total_ml_signals": self.ml_signals_count,
+            "total_calculated_signals": self.calculated_signals_count,
+            "position_reversals_by_symbol": self.position_reversals,
+            "average_profit": np.mean(self.profit_array) if self.profit_array else 0,
+            "total_trades_count": sum(self.total_trades.values()),
+        }
+
+        return stats
+
+    def log_final_statistics(self, initial_balance, final_balance):
+        """Log final trading session statistics"""
+        final_stats = self.get_statistics()
+        final_stats["initial_balance"] = initial_balance
+        final_stats["final_balance"] = final_balance
+        final_stats["total_account_change"] = final_balance - initial_balance
+
+        # Optional: Log to file or print detailed statistics
+        print("\n===== TRADING SESSION STATISTICS =====")
+        for key, value in final_stats.items():
+            print(f"{key}: {value}")
+
+        return final_stats
+
 trading_state = TradingState()
+trading_stats = None
