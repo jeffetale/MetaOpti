@@ -227,7 +227,7 @@ def get_signal(symbol):
                 return None, None, 0
 
         # Confidence and Prediction Quality Checks
-        if not (ml_signal and ml_confidence > 0.5):
+        if not (ml_signal and ml_confidence > 0.57):
             logging.info(f"{symbol} insufficient ML prediction confidence")
             return None, None, 0
 
