@@ -18,14 +18,14 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MLTrader:
-    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M1, look_back=50):
+    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M5, look_back=30):  # TimeFrame = 5 minutes    look_back = 30 candle sticks
         self.symbols = symbols
         self.timeframe = timeframe
         self.look_back = look_back
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 4000) # Fetch 4000 bars
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 10000) # Fetch 10000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)

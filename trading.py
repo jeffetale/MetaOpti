@@ -227,7 +227,7 @@ def get_signal(symbol):
                 return None, None, 0
 
         # Confidence and Prediction Quality Checks
-        if not (ml_signal and ml_confidence > 0.5):
+        if not (ml_signal and ml_confidence > 0.56):
             logging.info(f"{symbol} insufficient ML prediction confidence")
             return None, None, 0
 
@@ -316,7 +316,7 @@ def manage_open_positions(symbol):
 
                 continue
 
-        # Existing close conditions
+        # other close conditions
         if time_since_open >= 30:
             if current_profit < 0:
                 close_result = close_position(position)
@@ -326,7 +326,7 @@ def manage_open_positions(symbol):
                     )
                     adjust_trading_parameters(symbol, current_profit)
         else:
-            if current_profit <= -5.80:
+            if current_profit <= -15.80:
                 close_result = close_position(position)
                 if close_result:
                     logging.info(
@@ -335,9 +335,7 @@ def manage_open_positions(symbol):
                     adjust_trading_parameters(symbol, current_profit)
 
 def place_order(symbol, direction, atr, volume):
-    """
-    Place a trading order with dynamic stop loss and take profit based on ATR
-    """
+    """Place a trading order with dynamic stop loss and take profit based on ATR"""
     symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
         logging.error(f"Failed to get symbol info for {symbol}")
@@ -353,7 +351,7 @@ def place_order(symbol, direction, atr, volume):
     volume = max(symbol_info.volume_min, min(volume, symbol_info.volume_max))
 
     # Calculate order parameters
-    sl_distance = atr * 10  # Stop loss at 10 * ATR
+    sl_distance = atr * 5  # Stop loss at 5 * ATR
     tp_distance = atr * 2.5  # Take profit at 2.5 * ATR
 
     if direction == "buy":
@@ -412,12 +410,7 @@ def place_order(symbol, direction, atr, volume):
 
 
 def symbol_trader(symbol):
-    """
-    Enhanced symbol trading loop with neutral state handling and effective shutdown mechanism
-
-    Args:
-        symbol (str): Trading symbol to manage
-    """
+    #Symbol trading loop with neutral state handling and effective shutdown mechanism
     logging.info(f"Starting trading thread for {symbol}")
 
     while not SHUTDOWN_EVENT.is_set():
@@ -451,7 +444,7 @@ def symbol_trader(symbol):
                                     f"{symbol} restricted due to consecutive losses"
                                 )
 
-            time.sleep(0.5)  # Check every 500ms
+            time.sleep(1)  # Check every 1000ms
 
         except Exception as e:
             if not SHUTDOWN_EVENT.is_set():
@@ -462,17 +455,7 @@ def symbol_trader(symbol):
 
 
 def close_position(position):
-    """
-    Close an open position with enhanced error handling and logging
-
-    Args:
-        position: MT5 position object to close
-
-    Returns:
-        bool: True if position closed successfully, False otherwise
-    """
     try:
-        # Additional pre-checks
         if not mt5.initialize():
             logging.error(
                 f"MT5 not initialized when trying to close position {position.ticket}"
@@ -503,13 +486,12 @@ def close_position(position):
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        # Log detailed request information for debugging
         logging.debug(f"Close position request for {position.ticket}: {request}")
 
-        # Send order with explicit timeout
+        # Send order with timeout
         result = mt5.order_send(request)
 
-        # Comprehensive error checking
+        # Error checking
         if result is None:
             logging.error(
                 f"Failed to send close order for position {position.ticket}. Returned None."
