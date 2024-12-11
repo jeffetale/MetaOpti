@@ -119,17 +119,17 @@ def main():
             continue
         logging.info(f"Symbol {symbol} selected successfully")
 
-    # Create threads for each symbol
-    threads = []
-    for symbol in SYMBOLS:
-        thread = threading.Thread(target=symbol_trader, args=(symbol,))
-        thread.daemon = True
-        thread.start()
-        threads.append(thread)
-
     # Initialize trading statistics
     global trading_stats
     trading_stats = TradingStatistics(SYMBOLS)
+
+    # Create threads for each symbol
+    threads = []
+    for symbol in SYMBOLS:
+        thread = threading.Thread(target=symbol_trader, args=(symbol, trading_stats))
+        thread.daemon = True
+        thread.start()
+        threads.append(thread)
 
     # Main monitoring loop
     try:
@@ -167,10 +167,10 @@ def main():
 
     finally:
         # Ensure shutdown happens even if an exception occurs
-        shutdown(threads, initial_balance)
+        shutdown(threads, initial_balance, trading_stats)
 
 
-def shutdown(threads, initial_balance):
+def shutdown(threads, initial_balance, trading_stats=None):
     """Perform clean shutdown of the trading bot"""
     logging.info("Initiating shutdown sequence...")
 
@@ -189,7 +189,6 @@ def shutdown(threads, initial_balance):
     final_balance = mt5.account_info().balance
 
     # Log final statistics
-    global trading_stats
     if trading_stats is None:
         trading_stats = TradingStatistics(SYMBOLS)
 

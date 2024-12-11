@@ -62,7 +62,7 @@ def should_trade_symbol(symbol):
     state = trading_state.symbol_states[symbol]
         
     # Check recent trade performance
-    recent_trades = state.trades_history[-2:]  # Last 2 trades
+    recent_trades = state.trades_history[-3:]  # Last 3 trades
     if recent_trades:
         recent_performance = sum(recent_trades)
         
@@ -435,7 +435,7 @@ def place_order(symbol, direction, atr, volume, trading_stats=None, is_ml_signal
     return True
 
 
-def symbol_trader(symbol):
+def symbol_trader(symbol, trading_stats=None):
     # Symbol trading loop with neutral state handling and effective shutdown mechanism
     
     logging.info(f"Starting trading thread for {symbol}")
@@ -464,7 +464,7 @@ def symbol_trader(symbol):
                             signal,
                             atr,
                             state.volume,
-                            # trading_stats,
+                            trading_stats,
                             is_ml_signal=True,
                         )
 
