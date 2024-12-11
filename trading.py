@@ -60,11 +60,6 @@ def adjust_trading_parameters(symbol, profit):
 def should_trade_symbol(symbol):
     """Determine if we should trade a symbol based on its performance"""
     state = trading_state.symbol_states[symbol]
-
-    # if state.last_trade_time:
-    #     cooling_period = datetime.now() - state.last_trade_time
-    #     if cooling_period.total_seconds() < 120:  # 2-minute cooling period
-    #         return False
         
     # Check recent trade performance
     recent_trades = state.trades_history[-2:]  # Last 2 trades
@@ -227,7 +222,7 @@ def get_signal(symbol):
                 return None, None, 0
 
         # Confidence and Prediction Quality Checks
-        if not (ml_signal and ml_confidence > 0.58):
+        if not (ml_signal and ml_confidence >= 0.57):
             logging.info(f"{symbol} insufficient ML prediction confidence")
             return None, None, 0
 
@@ -309,7 +304,7 @@ def manage_open_positions(symbol, trading_stats=None):
                 )
 
                 # Place new position in opposite direction
-                place_order(symbol, reversal_direction, atr, state.volume * 1.2)
+                place_order(symbol, reversal_direction, atr, state.volume * 1.5)   # increase trade volume after reversal
                 logging.info(
                     f"|||||||| {symbol} new position opened in opposite direction: {reversal_direction} |||||||||"
                 )
