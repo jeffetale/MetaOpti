@@ -172,7 +172,7 @@ def get_signal(symbol):
         return None, None, 0
 
     # Fetch and validate historical rates
-    rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
+    rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 100)
     if rates is None:
         logging.warning(f"No rates available for {symbol}")
         return None, None, 0
