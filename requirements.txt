@@ -7,6 +7,7 @@ cryptography==35.0.0
 distlib==0.3.9
 docutils==0.18
 filelock==3.16.1
+git-filter-repo==2.47.0
 idna==3.3
 imbalanced-learn==0.12.4
 imblearn==0.0
