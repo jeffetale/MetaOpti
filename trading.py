@@ -227,7 +227,7 @@ def get_signal(symbol):
                 return None, None, 0
 
         # Confidence and Prediction Quality Checks
-        if not (ml_signal and ml_confidence > 0.56):
+        if not (ml_signal and ml_confidence > 0.58):
             logging.info(f"{symbol} insufficient ML prediction confidence")
             return None, None, 0
 
@@ -392,6 +392,21 @@ def place_order(symbol, direction, atr, volume, trading_stats=None, is_ml_signal
         "type_filling": filling_type,
     }
 
+    # data for analysis
+    rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
+    if rates is None:
+        logging.error(f"Failed to fetch rates for {symbol}")
+        return None, None, 0
+    df = pd.DataFrame(rates)
+    df["time"] = pd.to_datetime(df["time"], unit="s")
+    df = calculate_indicators(df, symbol)
+    current = df.iloc[-1]
+
+    # Initial trend score calculation
+    trend_score = calculate_trend_score(current)
+
+    potential_profit = current.ATR * abs(trend_score) * 10
+
     # Send the order
     result = mt5.order_send(request)
 
@@ -400,7 +415,9 @@ def place_order(symbol, direction, atr, volume, trading_stats=None, is_ml_signal
         return False
 
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logging.error(f"Order failed for {symbol}: {result.comment} (Error code: {result.retcode})")
+        logging.error(
+            f"Order failed for {symbol}: {result.comment} (Error code: {result.retcode})"
+        )
         logging.info(f"Symbol {symbol} filling mode: {symbol_info.filling_mode}")
 
         # Try alternative filling mode if first attempt fails
@@ -411,18 +428,21 @@ def place_order(symbol, direction, atr, volume, trading_stats=None, is_ml_signal
             logging.error(f"Second attempt failed for {symbol}")
             return False
 
-    logging.info(f"====> Order placed successfully for {symbol}: {direction.upper()} "
-                f"=====>Volume: {volume}, Price: {price}, SL: {sl}, TP: {tp}")
+    logging.info(
+        f"====> Order placed successfully for {symbol}: {direction.upper()} "
+        f"=====>Volume: {volume}, Price: {price}, SL: {sl}, TP: {tp}"
+    )
 
-    # if success and trading_stats:
-    #     # Simulated profit for logging
-    #     simulated_profit = potential_profit if direction == "buy" else -potential_profit
-    #     trading_stats.log_trade(symbol, direction, simulated_profit, is_ml_signal)
-    # return True
+    if trading_stats:
+        # Simulated profit for logging
+        simulated_profit = potential_profit if direction == "buy" else -potential_profit
+        trading_stats.log_trade(symbol, direction, simulated_profit, is_ml_signal)
+    return True
 
 
 def symbol_trader(symbol):
     # Symbol trading loop with neutral state handling and effective shutdown mechanism
+    
     logging.info(f"Starting trading thread for {symbol}")
 
     while not SHUTDOWN_EVENT.is_set():
@@ -441,9 +461,17 @@ def symbol_trader(symbol):
                     if signal == "neutral" or SHUTDOWN_EVENT.is_set():
                         continue
 
+                    success = False  # Initialize success flag
                     if signal and atr and potential_profit > 0:
                         state = trading_state.symbol_states[symbol]
-                        success = place_order(symbol, signal, atr, state.volume)
+                        success = place_order(
+                            symbol,
+                            signal,
+                            atr,
+                            state.volume,
+                            # trading_stats,
+                            is_ml_signal=True,
+                        )
 
                         if success:
                             state.last_trade_time = datetime.now()
@@ -456,7 +484,7 @@ def symbol_trader(symbol):
                                     f"{symbol} restricted due to consecutive losses"
                                 )
 
-            time.sleep(1)  # Check every 1000ms
+            time.sleep(0.05)  # Check every 50ms
 
         except Exception as e:
             if not SHUTDOWN_EVENT.is_set():
