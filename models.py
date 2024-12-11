@@ -3,7 +3,7 @@
 import pandas as pd
 import numpy as np
 from collections import defaultdict
-from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD
+from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, get_next_session_number
 import logging
 
 class SymbolState:
@@ -70,6 +70,7 @@ class TradingStatistics:
         self.max_cumulative_profit = 0
         self.min_cumulative_profit = 0
         self.cumulative_profit_history = []
+        self.symbol_cumulative_profits = {symbol: 0 for symbol in self.symbols}
 
     def log_trade(self, symbol, direction, profit, is_ml_signal):
         """Log individual trade details"""
@@ -101,6 +102,8 @@ class TradingStatistics:
             self.min_cumulative_profit, current_cumulative_profit
         )
 
+        self.symbol_cumulative_profits[symbol] += profit
+
     def log_position_reversal(self, symbol):
         """Log position reversals for a symbol"""
         self.position_reversals[symbol] += 1
@@ -121,11 +124,11 @@ class TradingStatistics:
             "buy_trades_by_symbol": self.buy_trades,
             "sell_trades_by_symbol": self.sell_trades,
             "highest_symbol_profit": {
-                symbol: max(profits) if profits else 0
+                symbol: max([p for p in profits if p > 0], default=0)
                 for symbol, profits in self.symbol_profit_array.items()
             },
             "lowest_symbol_profit": {
-                symbol: min(profits) if profits else 0
+                symbol: min([p for p in profits if p < 0], default=0)
                 for symbol, profits in self.symbol_profit_array.items()
             },
             "max_cumulative_profit": f"{self.currency}{self.max_cumulative_profit:.2f}",
@@ -138,11 +141,19 @@ class TradingStatistics:
             "total_trades_count": sum(self.total_trades.values()),
         }
 
-        # Format profits with currency symbol and consistent decimal places
+        stats.update(
+            {
+                "symbol_cumulative_profits": {
+                    symbol: f"{self.currency}{profit:.2f}"
+                    for symbol, profit in self.symbol_cumulative_profits.items()
+                }
+            }
+        )
+
         symbol_profits = {
             symbol: [f"{self.currency}{p:.2f}" for p in profits]
             for symbol, profits in self.symbol_profit_array.items()
-        }
+        }        
 
         stats.update(
             {
@@ -161,21 +172,25 @@ class TradingStatistics:
         final_stats["total_account_change"] = (
             f"{self.currency}{final_balance - initial_balance:.2f}"
         )
+        
+        session_number = get_next_session_number()
 
         # Log to file using the existing logging configuration
-        logging.info("\n===== DETAILED TRADING SESSION STATISTICS =====")
+        logging.info(f"\n===== TRADING SESSION {session_number} =====")
         for key, value in final_stats.items():
             logging.info(f"{key}: {value}")
 
         # formatted output for easier reading
-        stats_str = "\n".join([f"{key}: {value}" for key, value in final_stats.items()])
+        stats_str = f"===== TRADING SESSION {session_number} =====\n" + "\n".join(
+            [f"{key}: {value}" for key, value in final_stats.items()]
+        )
 
-        # write to a separate CSV or JSON file if needed
+        # Append to a file with session-specific information
         try:
-            with open('trading_session_stats.txt', 'w') as f:
-                f.write(stats_str)
+            with open("trading_session_stats.txt", "a") as f:
+                f.write(stats_str + "\n\n")
         except Exception as e:
-            logging.error(f"Failed to write statistics to file: {e}")
+            logging.error(f"Failed to append statistics to file: {e}")
 
         return final_stats
 

@@ -4,3 +4,5 @@ manual_close.py
 __pycache__/
 ml_models/
 test.py
+trading_session_stats.txt
+session_counter.txt
