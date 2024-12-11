@@ -171,7 +171,7 @@ class MLPredictor:
         mfi = 100 - (100 / (1 + money_ratio))
         return mfi
     
-    def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50, threshold=0.6) -> Tuple[Optional[str], float, float]:
+    def predict(self, timeframe=mt5.TIMEFRAME_M5, look_back=22, threshold=0.6) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
         if not all([self.direction_model, self.return_model, self.scaler, self.features]):
             logging.error("Models not loaded. Cannot predict.")
