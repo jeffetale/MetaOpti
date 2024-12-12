@@ -1,4 +1,4 @@
-#ml_predictor.py
+# ml_predictor.py
 
 import pandas as pd
 import numpy as np
@@ -16,51 +16,60 @@ class MLPredictor:
         self.return_model = None
         self.scaler = None
         self.features = None
-        
+
         self.load_models()
-    
+
+        self.predict_direction = tf.function(
+            self._predict_direction, 
+            reduce_retracing=True
+        )
+        self.predict_return = tf.function(
+            self._predict_return, 
+            reduce_retracing=True
+        )
+
     def load_models(self):
         """Load pre-trained models for a specific symbol"""
         try:
             # Load metadata first to get feature names
             metadata = joblib.load(f'ml_models/{self.symbol}_metadata.pkl')
             self.features = metadata.get('features', [])
-            
+
             self.direction_model = tf.keras.models.load_model(f'ml_models/{self.symbol}_direction_model.keras')
             self.return_model = tf.keras.models.load_model(f'ml_models/{self.symbol}_return_model.keras')
             self.scaler = joblib.load(f'ml_models/{self.symbol}_scaler.pkl')
-            
+
             logging.info(f"Models loaded for {self.symbol}")
-            #logging.info(f"Features: {self.features}")
+            # logging.info(f"Features: {self.features}")
         except FileNotFoundError:
             logging.error(f"Models for {self.symbol} not found. Train models first.")
             return None
-    
+
     def extract_features(self, rates_frame: pd.DataFrame) -> pd.DataFrame:
         """Extract features from price data"""
         # Technical indicators
         rates_frame['SMA_10'] = rates_frame['close'].rolling(window=10).mean()
         rates_frame['SMA_50'] = rates_frame['close'].rolling(window=50).mean()
         rates_frame['EMA_20'] = rates_frame['close'].ewm(span=20, adjust=False).mean()
-        
+
         # Momentum indicators
         rates_frame['RSI'] = self._calculate_rsi(rates_frame['close'])
         rates_frame['MACD'] = self._calculate_macd(rates_frame['close'])
         rates_frame['Stochastic'] = self._calculate_stochastic(rates_frame)
         rates_frame['Williams_R'] = self._calculate_williams_r(rates_frame)
-        
+
         # Volatility
         rates_frame['ATR'] = self._calculate_atr(rates_frame)
         rates_frame['Bollinger_Band_Width'] = self._calculate_bollinger_band_width(rates_frame)
-        
+
         # Trend indicators
         rates_frame['ADX'] = self._calculate_adx(rates_frame)
         rates_frame['CCI'] = self._calculate_cci(rates_frame)
-        
+
         # Volume-based indicators
         rates_frame['OBV'] = self._calculate_obv(rates_frame)
         rates_frame['MFI'] = self._calculate_money_flow_index(rates_frame)
-        
+
         # Price changes
         rates_frame['price_change_1'] = rates_frame['close'].pct_change()
         rates_frame['price_change_5'] = rates_frame['close'].pct_change(5)
@@ -74,7 +83,7 @@ class MLPredictor:
 
         # Select and return only the features used in training
         return rates_frame[self.features]
-    
+
     def _calculate_rsi(self, prices, periods=14):
         """Calculate Relative Strength Index"""
         delta = prices.diff()
@@ -82,7 +91,7 @@ class MLPredictor:
         loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
         rs = gain / loss
         return 100 - (100 / (1 + rs))
-    
+
     def _calculate_macd(self, prices, slow=26, fast=12, signal=9):
         """Calculate Moving Average Convergence Divergence"""
         exp1 = prices.ewm(span=fast, adjust=False).mean()
@@ -90,7 +99,7 @@ class MLPredictor:
         macd = exp1 - exp2
         signal_line = macd.ewm(span=signal, adjust=False).mean()
         return macd - signal_line
-    
+
     def _calculate_atr(self, df, period=14):
         """Calculate Average True Range"""
         high_low = df['high'] - df['low']
@@ -98,7 +107,7 @@ class MLPredictor:
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         return ranges.max(axis=1).rolling(window=period).mean()
-    
+
     def _calculate_stochastic(self, df, period=14):
         low_min = df['low'].rolling(window=period).min()
         high_max = df['high'].rolling(window=period).max()
@@ -122,19 +131,19 @@ class MLPredictor:
         """Calculate Average Directional Index"""
         high_diff = pd.Series(df['high']).diff()
         low_diff = -pd.Series(df['low']).diff()
-        
+
         plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0)
         minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0)
-        
+
         true_range = pd.DataFrame({
             'h-l': df['high'] - df['low'],
             'h-pc': np.abs(df['high'] - df['close'].shift()),
             'l-pc': np.abs(df['low'] - df['close'].shift())
         }).max(axis=1)
-        
+
         plus_di = 100 * (pd.Series(plus_dm).rolling(window=period).mean() / true_range.rolling(window=period).mean())
         minus_di = 100 * (pd.Series(minus_dm).rolling(window=period).mean() / true_range.rolling(window=period).mean())
-        
+
         adx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         return pd.Series(adx).rolling(window=period).mean()
 
@@ -145,65 +154,75 @@ class MLPredictor:
         mad = typical_price.rolling(window=period).apply(lambda x: np.abs(x - x.mean()).mean())
         cci = (typical_price - sma) / (0.015 * mad)
         return cci
-    
+
     def _calculate_obv(self, df):
         """Calculate On-Balance Volume"""
         # If 'volume' column doesn't exist, use a default of 1
         if 'volume' not in df.columns:
             df['volume'] = 1
-        
+
         obv = np.where(df['close'] > df['close'].shift(), df['volume'], 
                     np.where(df['close'] < df['close'].shift(), -df['volume'], 0))
         return np.cumsum(obv)
-    
+
     def _calculate_money_flow_index(self, df, period=14):
         """Calculate Money Flow Index"""
         # If 'volume' column doesn't exist, use a default of 1
         if 'volume' not in df.columns:
             df['volume'] = 1
-        
+
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         raw_money_flow = typical_price * df['volume']
-        
+
         pos_flow = pd.Series(np.where(typical_price > typical_price.shift(), raw_money_flow, 0))
         neg_flow = pd.Series(np.where(typical_price < typical_price.shift(), raw_money_flow, 0))
-        
+
         pos_mf_sum = pos_flow.rolling(window=period).sum()
         neg_mf_sum = neg_flow.rolling(window=period).sum()
-        
+
         money_ratio = pos_mf_sum / neg_mf_sum
         mfi = 100 - (100 / (1 + money_ratio))
         return mfi
-    
+    def _predict_direction(self, scaled_features):
+        """Dedicated method for direction prediction"""
+        return self.direction_model(scaled_features)
+
+    def _predict_return(self, scaled_features):
+        """Dedicated method for return prediction"""
+        return self.return_model(scaled_features)
     def predict(self, timeframe=mt5.TIMEFRAME_M1, look_back=50, threshold=0.6) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
         if not all([self.direction_model, self.return_model, self.scaler, self.features]):
             logging.error("Models not loaded. Cannot predict.")
             return None, 0, 0
-        
+
         # Fetch latest price data
         rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, look_back)
         if rates is None:
             logging.error(f"Failed to fetch rates for {self.symbol}")
             return None, 0, 0
-        
+
         rates_frame = pd.DataFrame(rates)
-        
+
         try:
             # Extract features ensuring exact column names and order
             features_df = self.extract_features(rates_frame)
-            
+
             # Ensure column names match exactly
             features_df = pd.DataFrame(features_df.values, columns=self.features)
 
             # Scale features
             scaled_features = self.scaler.transform(features_df)
-            
+
             # Predict direction and return
-            # For neural networks, use predict method directly
-            direction_prob = self.direction_model.predict(scaled_features)[0][0]
-            predicted_return = self.return_model.predict(scaled_features)[0][0]
-            
+            direction_prob = self.predict_direction(
+                tf.convert_to_tensor(scaled_features, dtype=tf.float32)
+            )[0][0].numpy()
+
+            predicted_return = self.predict_return(
+                tf.convert_to_tensor(scaled_features, dtype=tf.float32)
+            )[0][0].numpy()
+
             # Interpret predictions
             if direction_prob > threshold:
                 signal = "buy"
@@ -211,7 +230,7 @@ class MLPredictor:
                 signal = "sell"
             else:
                 signal = "hold"
-            
+
             return signal, direction_prob, predicted_return
 
         except Exception as e:

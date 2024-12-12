@@ -8,6 +8,7 @@ from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.models import save_model
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
@@ -25,51 +26,50 @@ class MLTrader:
         self.timeframe = timeframe
         self.look_back = look_back
         self.models = {}
-        
+
     def fetch_historical_data(self, symbol):
         rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 5000) # Fetch 5000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)
 
-    
     def feature_engineering(self, df):
         """Advanced feature engineering with expanded indicator set"""
         # Existing technical indicators
         df['SMA_10'] = df['close'].rolling(window=10).mean()
         df['SMA_50'] = df['close'].rolling(window=50).mean()
         df['EMA_20'] = df['close'].ewm(span=20, adjust=False).mean()
-        
+
         # Advanced Momentum Indicators
         df['RSI'] = self._calculate_rsi(df['close'])
         df['MACD'] = self._calculate_macd(df['close'])
         df['Stochastic'] = self._calculate_stochastic(df)
         df['Williams_R'] = self._calculate_williams_r(df)
-        
+
         # Volatility Indicators
         df['ATR'] = self._calculate_atr(df)
         df['Bollinger_Band_Width'] = self._calculate_bollinger_band_width(df)
-        
+
         # Trend Indicators
         df['ADX'] = self._calculate_adx(df)
         df['CCI'] = self._calculate_cci(df)
-        
+
         # Volume-based Indicators
         df['OBV'] = self._calculate_obv(df)
         df['MFI'] = self._calculate_money_flow_index(df)
-        
+
         # Advanced Price Change Features
         df['price_change_1'] = df['close'].pct_change()
         df['price_change_5'] = df['close'].pct_change(5)
         df['price_change_volatility'] = df['price_change_1'].rolling(window=10).std()
-        
+
         # Relative Performance Indicators
         df['relative_strength'] = df['close'] / df['close'].rolling(window=50).mean()
-        
+
         # Predict based on future price movements with multiple thresholds
         df['future_close'] = df['close'].shift(-1)
         df['target_return'] = (df['future_close'] - df['close']) / df['close']
-        
+
         # Use multiple thresholds to create a more balanced classification without leaving lots of neutral data
         df['target_direction'] = np.select(
             [
@@ -79,7 +79,7 @@ class MLTrader:
             [1, -1],
             default=0  # Neutral movement
         )
-        
+
         return df
 
     def _calculate_stochastic(self, df, period=14):
@@ -108,19 +108,19 @@ class MLTrader:
         """Calculate Average Directional Index"""
         high_diff = pd.Series(df['high']).diff()
         low_diff = -pd.Series(df['low']).diff()
-        
+
         plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0)
         minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0)
-        
+
         true_range = pd.DataFrame({
             'h-l': df['high'] - df['low'],
             'h-pc': np.abs(df['high'] - df['close'].shift()),
             'l-pc': np.abs(df['low'] - df['close'].shift())
         }).max(axis=1)
-        
+
         plus_di = 100 * (pd.Series(plus_dm).rolling(window=period).mean() / true_range.rolling(window=period).mean())
         minus_di = 100 * (pd.Series(minus_dm).rolling(window=period).mean() / true_range.rolling(window=period).mean())
-        
+
         adx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         return pd.Series(adx).rolling(window=period).mean()
 
@@ -137,7 +137,7 @@ class MLTrader:
         # If 'volume' column doesn't exist, use a default of 1
         if 'volume' not in df.columns:
             df['volume'] = 1
-        
+
         obv = np.where(df['close'] > df['close'].shift(), df['volume'], 
                     np.where(df['close'] < df['close'].shift(), -df['volume'], 0))
         return np.cumsum(obv)
@@ -147,20 +147,20 @@ class MLTrader:
         # If 'volume' column doesn't exist, use a default of 1
         if 'volume' not in df.columns:
             df['volume'] = 1
-        
+
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         raw_money_flow = typical_price * df['volume']
-        
+
         pos_flow = pd.Series(np.where(typical_price > typical_price.shift(), raw_money_flow, 0))
         neg_flow = pd.Series(np.where(typical_price < typical_price.shift(), raw_money_flow, 0))
-        
+
         pos_mf_sum = pos_flow.rolling(window=period).sum()
         neg_mf_sum = neg_flow.rolling(window=period).sum()
-        
+
         money_ratio = pos_mf_sum / neg_mf_sum
         mfi = 100 - (100 / (1 + money_ratio))
         return mfi
-    
+
     def _calculate_rsi(self, prices, periods=14):
         """Calculate Relative Strength Index"""
         delta = prices.diff()
@@ -168,7 +168,7 @@ class MLTrader:
         loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
         rs = gain / loss
         return 100 - (100 / (1 + rs))
-    
+
     def _calculate_macd(self, prices, slow=26, fast=12, signal=9):
         """Calculate Moving Average Convergence Divergence"""
         exp1 = prices.ewm(span=fast, adjust=False).mean()
@@ -176,7 +176,7 @@ class MLTrader:
         macd = exp1 - exp2
         signal_line = macd.ewm(span=signal, adjust=False).mean()
         return macd - signal_line
-    
+
     def _calculate_atr(self, df, period=14):
         """Calculate Average True Range"""
         high_low = df['high'] - df['low']
@@ -184,7 +184,7 @@ class MLTrader:
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         return ranges.max(axis=1).rolling(window=period).mean()
-    
+
     def prepare_data(self, symbol):
         """Prepare data for neural network training"""
         df = self.fetch_historical_data(symbol)
@@ -259,7 +259,7 @@ class MLTrader:
             Dense(16, activation='relu'),
             Dense(1, activation='sigmoid')  # Binary classification
         ])
-        
+
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss='binary_crossentropy',
@@ -279,7 +279,7 @@ class MLTrader:
             Dense(16, activation='relu'),
             Dense(1)  # Linear output for regression
         ])
-        
+
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss='mean_squared_error',
@@ -310,18 +310,9 @@ class MLTrader:
                         X, y_direction
                     )
 
-                    # Find the indices of the original samples in the resampled data
-                    # This helps us match the corresponding return values
-                    original_indices = [X.index.get_loc(idx) for idx in X.index]
-                    matched_return_values = y_return.iloc[original_indices]
-
-                    # Extend return values to match SMOTE-resampled size if needed
-                    if len(matched_return_values) < len(X_resampled):
-                        # Repeat the matched return values to match resampled size
-                        repeated_times = (len(X_resampled) // len(matched_return_values)) + 1
-                        y_return_resampled = pd.concat([matched_return_values] * repeated_times).iloc[:len(X_resampled)]
-                    else:
-                        y_return_resampled = matched_return_values.iloc[:len(X_resampled)]
+                    y_return_resampled = pd.Series(
+                        list(y_return) * ((len(X_resampled) // len(y_return)) + 1)
+                    )[:len(X_resampled)]
 
                     (
                         X_train,
@@ -344,44 +335,48 @@ class MLTrader:
                     X_test_scaled = scaler.transform(X_test)
 
                     # Create and train direction model
-                    input_shape = (X_train_scaled.shape[1],)
-                    direction_model = self.create_direction_model(input_shape[0])
-                    
+                    direction_model = self.create_direction_model(
+                        X_train_scaled.shape[1]
+                    )
+
                     # Callbacks for training
-                    early_stopping = EarlyStopping(
-                        monitor='val_loss', 
-                        patience=10, 
-                        restore_best_weights=True
-                    )
-                    reduce_lr = ReduceLROnPlateau(
-                        monitor='val_loss', 
-                        factor=0.2, 
-                        patience=5, 
-                        min_lr=0.00001
-                    )
+                    callbacks = [
+                        EarlyStopping(
+                            monitor='val_loss', 
+                            patience=15, 
+                            restore_best_weights=True,
+                            min_delta=0.001
+                        ),
+                        ReduceLROnPlateau(
+                            monitor='val_loss', 
+                            factor=0.5, 
+                            patience=7, 
+                            min_lr=0.000001
+                        )
+                    ]
 
                     # Train direction model
                     direction_history = direction_model.fit(
-                        X_train_scaled, 
-                        y_dir_train, 
+                        X_train_scaled,
+                        y_dir_train,
                         validation_split=0.2,
-                        epochs=100, 
+                        epochs=150,
                         batch_size=32,
-                        callbacks=[early_stopping, reduce_lr],
-                        verbose=0
+                        callbacks=callbacks,
+                        verbose=1, 
                     )
 
                     # Create and train return model
-                    return_model = self.create_return_model(input_shape[0])
-                    
+                    return_model = self.create_return_model(X_train_scaled.shape[1])
+
                     return_history = return_model.fit(
                         X_train_scaled, 
                         y_ret_train, 
                         validation_split=0.2,
-                        epochs=100, 
+                        epochs=150, 
                         batch_size=32,
-                        callbacks=[early_stopping, reduce_lr],
-                        verbose=0
+                        callbacks=callbacks,
+                        verbose=1
                     )
 
                     # Evaluate models
@@ -393,6 +388,8 @@ class MLTrader:
 
                     # Save models and scaler
                     os.makedirs("ml_models", exist_ok=True)
+                    
+                    # Use save() method without additional options
                     direction_model.save(f"ml_models/{symbol}_direction_model.keras")
                     return_model.save(f"ml_models/{symbol}_return_model.keras")
                     joblib.dump(scaler, f"ml_models/{symbol}_scaler.pkl")
@@ -400,8 +397,8 @@ class MLTrader:
                     # Save model metadata
                     model_metadata = {
                         "features": X.columns.tolist(),
-                        "direction_model_params": direction_model.get_config(),
-                        "return_model_params": return_model.get_config(),
+                        "direction_model_architecture": str(direction_model.summary()),
+                        "return_model_architecture": str(return_model.summary()),
                     }
                     joblib.dump(model_metadata, f"ml_models/{symbol}_metadata.pkl")
 
@@ -422,7 +419,7 @@ class MLTrader:
     def analyze_feature_importance(self, symbol):
         """Estimate feature importance using weights"""
         X, y_direction, y_return = self.prepare_data(symbol)
-        
+
         # Scale features
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
