@@ -1,5 +1,8 @@
+#ml_predictor.py
+
 import pandas as pd
 import numpy as np
+import tensorflow as tf
 # import MetaTrader5 as mt5
 import joblib
 import logging
@@ -23,8 +26,8 @@ class MLPredictor:
             metadata = joblib.load(f'ml_models/{self.symbol}_metadata.pkl')
             self.features = metadata.get('features', [])
             
-            self.direction_model = joblib.load(f'ml_models/{self.symbol}_direction_model.pkl')
-            self.return_model = joblib.load(f'ml_models/{self.symbol}_return_model.pkl')
+            self.direction_model = tf.keras.models.load_model(f'ml_models/{self.symbol}_direction_model.keras')
+            self.return_model = tf.keras.models.load_model(f'ml_models/{self.symbol}_return_model.keras')
             self.scaler = joblib.load(f'ml_models/{self.symbol}_scaler.pkl')
             
             logging.info(f"Models loaded for {self.symbol}")
@@ -62,14 +65,15 @@ class MLPredictor:
         rates_frame['price_change_1'] = rates_frame['close'].pct_change()
         rates_frame['price_change_5'] = rates_frame['close'].pct_change(5)
         rates_frame['price_change_volatility'] = rates_frame['price_change_1'].rolling(window=10).std()
-        
-        # Relative performance
+
+        # Relative Performance
         rates_frame['relative_strength'] = rates_frame['close'] / rates_frame['close'].rolling(window=50).mean()
-        
-        # Select and order features exactly as during training
-        features_df = rates_frame[self.features].iloc[-1].to_frame().T
-        
-        return features_df
+
+        # Drop NaN values
+        rates_frame.dropna(inplace=True)
+
+        # Select and return only the features used in training
+        return rates_frame[self.features]
     
     def _calculate_rsi(self, prices, periods=14):
         """Calculate Relative Strength Index"""
@@ -195,22 +199,20 @@ class MLPredictor:
             # Scale features
             scaled_features = self.scaler.transform(features_df)
             
-            # Convert scaled features back to DataFrame with correct feature names
-            scaled_features_df = pd.DataFrame(scaled_features, columns=self.features)
-            
             # Predict direction and return
-            direction_prob = self.direction_model.predict_proba(scaled_features_df)[0]
-            predicted_return = self.return_model.predict(scaled_features_df)[0]
+            # For neural networks, use predict method directly
+            direction_prob = self.direction_model.predict(scaled_features)[0][0]
+            predicted_return = self.return_model.predict(scaled_features)[0][0]
             
             # Interpret predictions
-            if direction_prob[1] > threshold:
+            if direction_prob > threshold:
                 signal = "buy"
-            elif direction_prob[0] > threshold:
+            elif direction_prob < (1 - threshold):
                 signal = "sell"
             else:
                 signal = "hold"
             
-            return signal, direction_prob[1], predicted_return
+            return signal, direction_prob, predicted_return
 
         except Exception as e:
             logging.error(f"Prediction error: {e}")

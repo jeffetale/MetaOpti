@@ -3,15 +3,17 @@
 import numpy as np
 import pandas as pd
 # import MetaTrader5 as mt5
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
-from sklearn.metrics import classification_report, mean_squared_error
 from imblearn.over_sampling import SMOTE
 import joblib
 import logging
 import os
-from datetime import datetime, timedelta
 from config import mt5
 
 logging.basicConfig(level=logging.INFO, 
@@ -184,181 +186,271 @@ class MLTrader:
         return ranges.max(axis=1).rolling(window=period).mean()
     
     def prepare_data(self, symbol):
+        """Prepare data for neural network training"""
         df = self.fetch_historical_data(symbol)
         df = self.feature_engineering(df)
         df.dropna(inplace=True)
-        
-        # Detailed logging of data preparation
+
         logging.info(f"Total data points for {symbol}: {len(df)}")
-        logging.info(f"Class Distribution before filtering: {df['target_direction'].value_counts(normalize=True)}")
-        
+        logging.info(
+            f"Class Distribution before filtering: {df['target_direction'].value_counts(normalize=True)}"
+        )
+
         # Modified filtering to ensure some data remains
-        df_filtered = df[df['target_direction'] != 0]
-        
+        df_filtered = df[df["target_direction"] != 0].copy()  
+
         logging.info(f"Data points after filtering: {len(df_filtered)}")
-        logging.info(f"Class Distribution after filtering: {df_filtered['target_direction'].value_counts(normalize=True)}")
+        logging.info(
+            f"Class Distribution after filtering: {df_filtered['target_direction'].value_counts(normalize=True)}"
+        )
 
         # Safety check for insufficient data
         if len(df_filtered) < 100:  # Minimum threshold for training
-            logging.warning(f"Insufficient data for {symbol}. Need at least 100 data points.")
+            logging.warning(
+                f"Insufficient data for {symbol}. Need at least 100 data points."
+            )
             return None, None, None
-        
+
         # Remap target_direction to binary (0 and 1)
-        df_filtered['target_direction_binary'] = np.where(df_filtered['target_direction'] > 0, 1, 0)
-        
+        df_filtered.loc[:, "target_direction_binary"] = np.where(
+            df_filtered["target_direction"] > 0, 1, 0
+        )
+
         # Prepare features and target
         features = [
-            'SMA_10', 'SMA_50', 'EMA_20',  # Moving Averages
-            'RSI', 'MACD', 'Stochastic', 'Williams_R',  # Momentum
-            'ATR', 'Bollinger_Band_Width',  # Volatility
-            'ADX', 'CCI',  # Trend
-            'OBV', 'MFI',  # Volume
-            'price_change_1', 'price_change_5', 'price_change_volatility',
-            'relative_strength'
+            "SMA_10", "SMA_50", "EMA_20",  # Moving Averages
+            "RSI", "MACD", "Stochastic", "Williams_R",  # Momentum
+            "ATR", "Bollinger_Band_Width",  # Volatility
+            "ADX", "CCI",  # Trend
+            "OBV", "MFI",  # Volume
+            "price_change_1", "price_change_5", 
+            "price_change_volatility", "relative_strength",
         ]
-        
+
+        # Ensure all required features exist
+        missing_features = [f for f in features if f not in df_filtered.columns]
+        if missing_features:
+            logging.warning(f"Missing features: {missing_features}")
+            return None, None, None
+
         X = df_filtered[features]
-        y_direction = df_filtered['target_direction_binary']
-        y_return = df_filtered['target_return']
-                
+        y_direction = df_filtered["target_direction_binary"]
+        y_return = df_filtered["target_return"]
+
+        # Final safety check to ensure consistent sample sizes
+        if not (len(X) == len(y_direction) == len(y_return)):
+            logging.error(f"Inconsistent sample sizes for {symbol}")
+            logging.error(f"X shape: {X.shape}")
+            logging.error(f"y_direction shape: {y_direction.shape}")
+            logging.error(f"y_return shape: {y_return.shape}")
+            return None, None, None
+
         return X, y_direction, y_return
+
+    def create_direction_model(self, input_shape):
+        """Create neural network for direction classification"""
+        model = Sequential([
+            Dense(64, activation='relu', input_shape=(input_shape,), kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+            BatchNormalization(),
+            Dropout(0.3),
+            Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+            BatchNormalization(),
+            Dropout(0.3),
+            Dense(16, activation='relu'),
+            Dense(1, activation='sigmoid')  # Binary classification
+        ])
+        
+        model.compile(
+            optimizer=Adam(learning_rate=0.001),
+            loss='binary_crossentropy',
+            metrics=['accuracy']
+        )
+        return model
+
+    def create_return_model(self, input_shape):
+        """Create neural network for return regression"""
+        model = Sequential([
+            Dense(64, activation='relu', input_shape=(input_shape,), kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+            BatchNormalization(),
+            Dropout(0.3),
+            Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+            BatchNormalization(),
+            Dropout(0.3),
+            Dense(16, activation='relu'),
+            Dense(1)  # Linear output for regression
+        ])
+        
+        model.compile(
+            optimizer=Adam(learning_rate=0.001),
+            loss='mean_squared_error',
+            metrics=['mae']
+        )
+        return model
 
     def train_models(self):
         for symbol in self.symbols:
             logging.info(f"Training models for {symbol}")
             try:
                 X, y_direction, y_return = self.prepare_data(symbol)
-                
+
                 # Additional safety checks
                 if X is None or len(X) == 0:
-                    logging.warning(f"Skipping {symbol} due to insufficient data")
+                    logging.warning(f"Skipping {symbol} due to insufficient or invalid data")
                     continue
-                
+
                 # If only one class exists, skip this symbol
                 if len(y_direction.unique()) < 2:
                     logging.warning(f"Skipping {symbol} - only one class present")
                     continue
-                
+
                 # Apply SMOTE for balancing
                 try:
                     smote = SMOTE(random_state=42)
-                    X_resampled, y_direction_resampled = smote.fit_resample(X, y_direction)
-                    
-                    X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
-                        X_resampled, y_direction_resampled, y_return, test_size=0.2, random_state=42
+                    X_resampled, y_direction_resampled = smote.fit_resample(
+                        X, y_direction
                     )
-                    
-                    # Log detailed resampled class distribution
-                    logging.info(f"Class Distribution after SMOTE:\n{pd.Series(y_direction_resampled).value_counts(normalize=True)}")
-                
-                except Exception as smote_error:
-                    logging.warning(f"SMOTE failed for {symbol}. Falling back to standard split. Error: {smote_error}")
-                    X_train, X_test, y_dir_train, y_dir_test, y_ret_train, y_ret_test = train_test_split(
-                        X, y_direction, y_return, test_size=0.2, random_state=42
-                    )
-                    
-                    # Log original class distribution
-                    logging.info(f"Class Distribution:\n{y_direction.value_counts(normalize=True)}")
-                
-                # Scale features while preserving column names
-                scaler = StandardScaler()
-                X_train_scaled = pd.DataFrame(
-                    scaler.fit_transform(X_train), 
-                    columns=X_train.columns, 
-                    index=X_train.index
-                )
-                X_test_scaled = pd.DataFrame(
-                    scaler.transform(X_test), 
-                    columns=X_test.columns, 
-                    index=X_test.index
-                )
-                
-                # Hyperparameter tuning
-                dir_classifier = RandomForestClassifier(
-                    n_estimators=200,  # Increased ensemble size
-                    max_depth=15,  # Prevent overfitting
-                    min_samples_split=10,
-                    min_samples_leaf=5,
-                    class_weight='balanced', 
-                    random_state=42
-                )
-                
-                return_predictor = GradientBoostingRegressor(
-                    n_estimators=150,
-                    learning_rate=0.1,
-                    max_depth=5,
-                    min_samples_split=20,
-                    loss='huber',  # More robust to outliers
-                    random_state=42
-                )
 
-                # Train models
-                dir_classifier.fit(X_train_scaled, y_dir_train)
-                return_predictor.fit(X_train, y_ret_train)
-                
-                # Evaluate models
-                dir_pred = dir_classifier.predict(X_test_scaled)
-                ret_pred = return_predictor.predict(X_test_scaled)
-                
-                logging.info(f"Direction Classification Report for {symbol}:")
-                logging.info(classification_report(y_dir_test, dir_pred))
-                logging.info(f"Return Prediction MSE: {mean_squared_error(y_ret_test, ret_pred)}")
-                
-                # Save models and scaler
-                os.makedirs('ml_models', exist_ok=True)
-                joblib.dump(dir_classifier, f'ml_models/{symbol}_direction_model.pkl')
-                joblib.dump(return_predictor, f'ml_models/{symbol}_return_model.pkl')
-                joblib.dump(scaler, f'ml_models/{symbol}_scaler.pkl')
-                
-                # Save metadata
-                try:
-                    features = X.columns.tolist()
+                    # Find the indices of the original samples in the resampled data
+                    # This helps us match the corresponding return values
+                    original_indices = [X.index.get_loc(idx) for idx in X.index]
+                    matched_return_values = y_return.iloc[original_indices]
+
+                    # Extend return values to match SMOTE-resampled size if needed
+                    if len(matched_return_values) < len(X_resampled):
+                        # Repeat the matched return values to match resampled size
+                        repeated_times = (len(X_resampled) // len(matched_return_values)) + 1
+                        y_return_resampled = pd.concat([matched_return_values] * repeated_times).iloc[:len(X_resampled)]
+                    else:
+                        y_return_resampled = matched_return_values.iloc[:len(X_resampled)]
+
+                    (
+                        X_train,
+                        X_test,
+                        y_dir_train,
+                        y_dir_test,
+                        y_ret_train,
+                        y_ret_test,
+                    ) = train_test_split(
+                        X_resampled,
+                        y_direction_resampled,
+                        y_return_resampled,
+                        test_size=0.2,
+                        random_state=42,
+                    )
+
+                    # Scale features
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train)
+                    X_test_scaled = scaler.transform(X_test)
+
+                    # Create and train direction model
+                    input_shape = (X_train_scaled.shape[1],)
+                    direction_model = self.create_direction_model(input_shape[0])
+                    
+                    # Callbacks for training
+                    early_stopping = EarlyStopping(
+                        monitor='val_loss', 
+                        patience=10, 
+                        restore_best_weights=True
+                    )
+                    reduce_lr = ReduceLROnPlateau(
+                        monitor='val_loss', 
+                        factor=0.2, 
+                        patience=5, 
+                        min_lr=0.00001
+                    )
+
+                    # Train direction model
+                    direction_history = direction_model.fit(
+                        X_train_scaled, 
+                        y_dir_train, 
+                        validation_split=0.2,
+                        epochs=100, 
+                        batch_size=32,
+                        callbacks=[early_stopping, reduce_lr],
+                        verbose=0
+                    )
+
+                    # Create and train return model
+                    return_model = self.create_return_model(input_shape[0])
+                    
+                    return_history = return_model.fit(
+                        X_train_scaled, 
+                        y_ret_train, 
+                        validation_split=0.2,
+                        epochs=100, 
+                        batch_size=32,
+                        callbacks=[early_stopping, reduce_lr],
+                        verbose=0
+                    )
+
+                    # Evaluate models
+                    dir_loss, dir_accuracy = direction_model.evaluate(X_test_scaled, y_dir_test)
+                    ret_loss, ret_mae = return_model.evaluate(X_test_scaled, y_ret_test)
+
+                    logging.info(f"Direction Model - Test Accuracy: {dir_accuracy}")
+                    logging.info(f"Return Model - Test MAE: {ret_mae}")
+
+                    # Save models and scaler
+                    os.makedirs("ml_models", exist_ok=True)
+                    direction_model.save(f"ml_models/{symbol}_direction_model.keras")
+                    return_model.save(f"ml_models/{symbol}_return_model.keras")
+                    joblib.dump(scaler, f"ml_models/{symbol}_scaler.pkl")
+
+                    # Save model metadata
                     model_metadata = {
-                        "features": features,
-                        "scaler": scaler,
-                        "model_params": {
-                            "direction_model": dir_classifier.get_params(),
-                            "return_model": return_predictor.get_params()
-                        }
+                        "features": X.columns.tolist(),
+                        "direction_model_params": direction_model.get_config(),
+                        "return_model_params": return_model.get_config(),
                     }
-                    joblib.dump(model_metadata, f'ml_models/{symbol}_metadata.pkl')
+                    joblib.dump(model_metadata, f"ml_models/{symbol}_metadata.pkl")
+
                 except Exception as e:
-                    logging.error(f"Error saving metadata for {symbol}: {e}")
-            
+                    logging.error(f"SMOTE or training error for {symbol}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
             except Exception as e:
-                logging.error(f"Error processing {symbol}: {e}")
+                logging.error(f"Error processing {symbol}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
-        
+
         logging.info("Model training completed.")
 
     def analyze_feature_importance(self, symbol):
+        """Estimate feature importance using weights"""
         X, y_direction, y_return = self.prepare_data(symbol)
         
-        # Direction classifier feature importance
-        dir_classifier = RandomForestClassifier(n_estimators=200, random_state=42)
-        dir_classifier.fit(X, y_direction)
-        
-        # Return predictor feature importance
-        return_predictor = GradientBoostingRegressor(n_estimators=150, random_state=42)
-        return_predictor.fit(X, y_return)
-        
-        # Create feature importance DataFrame
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Recreate and load trained models (assuming they exist)
+        direction_model = load_model(f"ml_models/{symbol}_direction_model.keras")
+        return_model = load_model(f"ml_models/{symbol}_return_model.keras")
+
+        # Extract first layer weights for feature importance estimation
+        dir_weights = np.abs(direction_model.layers[0].get_weights()[0]).mean(axis=1)
+        ret_weights = np.abs(return_model.layers[0].get_weights()[0]).mean(axis=1)
+
+        # Create feature importance DataFrames
         dir_importance = pd.DataFrame({
             'feature': X.columns,
-            'direction_importance': dir_classifier.feature_importances_
+            'direction_importance': dir_weights
         }).sort_values('direction_importance', ascending=False)
-        
+
         ret_importance = pd.DataFrame({
             'feature': X.columns,
-            'return_importance': return_predictor.feature_importances_
+            'return_importance': ret_weights
         }).sort_values('return_importance', ascending=False)
-        
-        # Visualization could be added here
-        logging.info("Direction Classifier Feature Importance:")
+
+        logging.info("Direction Model Feature Importance:")
         logging.info(dir_importance)
-        logging.info("\nReturn Predictor Feature Importance:")
+        logging.info("\nReturn Model Feature Importance:")
         logging.info(ret_importance)
-        
+
         return dir_importance, ret_importance
 
 
