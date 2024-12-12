@@ -4,10 +4,16 @@ import time
 import signal
 import sys
 
-from config import initialize_mt5, SYMBOLS, SHUTDOWN_EVENT
+from config import initialize_mt5, SYMBOLS, SHUTDOWN_EVENT, get_next_session_number
 from trading import logging, symbol_trader, mt5, trading_state, close_position
 from models import TradingStatistics
+from logging_config import (
+    setup_comprehensive_logging,
+    log_session_start,
+    log_session_end,
+)
 
+setup_comprehensive_logging()
 global trading_stats
 
 
@@ -91,6 +97,12 @@ def close_all_positions():
 
 
 def main():
+    #trading session no.
+    session_number = get_next_session_number()
+
+    # Log session start
+    log_session_start(session_number)
+    
     # Set up signal handling
     initialize_signal_handling()
 
@@ -193,6 +205,9 @@ def shutdown(threads, initial_balance, trading_stats=None):
         trading_stats = TradingStatistics(SYMBOLS)
 
     trading_stats.log_final_statistics(initial_balance, final_balance)
+
+    session_number = get_next_session_number()
+    log_session_end(session_number)
 
     # Shutdown MT5 connection
     mt5.shutdown()

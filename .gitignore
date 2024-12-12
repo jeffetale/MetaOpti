@@ -6,3 +6,7 @@ ml_models/
 test.py
 trading_session_stats.txt
 session_counter.txt
+ml_models.bak
+session_tracker.txt
+logs/
+trading_2.py

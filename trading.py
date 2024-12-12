@@ -8,18 +8,20 @@ import logging
 from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, TIMEFRAME, PROFIT_LOCK_PERCENTAGE, MAX_CONSECUTIVE_LOSSES, mt5, POSITION_REVERSAL_THRESHOLD, NEUTRAL_CONFIDENCE_THRESHOLD, NEUTRAL_HOLD_DURATION, SHUTDOWN_EVENT
 from models import trading_state, TradingStatistics
 from ml_predictor import MLPredictor
+from logging_config import setup_comprehensive_logging
 
+setup_comprehensive_logging()
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        logging.FileHandler('trading_bot.log'),
-        logging.StreamHandler()
-    ]
-)
+#logging.basicConfig(
+#    level=logging.INFO,
+#    format='%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s',
+#    datefmt='%Y-%m-%d %H:%M:%S',
+#    handlers=[
+#        logging.FileHandler('trading_bot.log'),
+#        logging.StreamHandler()
+#    ]
+#)
 
 def calculate_win_rate(trades):
     if not trades:
@@ -80,7 +82,7 @@ def should_trade_symbol(symbol):
     
     if state.is_restricted:
         # Check if enough time has passed to retry
-        if state.last_trade_time and (datetime.now() - state.last_trade_time).hours < 1:
+        if state.last_trade_time and (datetime.now() - state.last_trade_time).total_seconds() / 3600 < 1:
             return False
         
         # Reset restriction if conditions improve
@@ -222,7 +224,7 @@ def get_signal(symbol):
                 return None, None, 0
 
         # Confidence and Prediction Quality Checks
-        if not (ml_signal and ml_confidence >= 0.57):
+        if not (ml_signal and ml_confidence >= 0.6):
             logging.info(f"{symbol} insufficient ML prediction confidence")
             return None, None, 0
 

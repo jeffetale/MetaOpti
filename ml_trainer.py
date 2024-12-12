@@ -18,14 +18,14 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MLTrader:
-    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M5, look_back=22):  # TimeFrame = 1 minutes    consider = 22 candle sticks
+    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M1, look_back=30):  # TimeFrame = 1 minutes    look_back = 50 candle sticks
         self.symbols = symbols
         self.timeframe = timeframe
         self.look_back = look_back
         self.models = {}
         
     def fetch_historical_data(self, symbol):
-        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 2000) # Fetch 2000 bars
+        rates = mt5.copy_rates_from_pos(symbol, self.timeframe, 0, 5000) # Fetch 5000 bars
         if rates is None:
             raise ValueError(f"Failed to fetch data for {symbol}")
         return pd.DataFrame(rates)
@@ -367,30 +367,12 @@ if __name__ == "__main__":
     if not mt5.initialize():
         logging.error("MT5 initialization failed")
         exit()
-
+    
     # Symbols from config to train models
-    # symbols = [
-    #     "XAUUSD",
-    #     "XTIUSD",
-    #     "XAGUSD",
-    #     "US30",
-    #     "USTEC",
-    #     "EURAUD",
-    #     "AUDUSD",
-    #     "GBPJPY",
-    #     "EURJPY",
-    #     "USDJPY",
-    #     "USDCHF",
-    #     "GBPUSD",
-    #     "EURUSD",
-    #     "NZDUSD",
-    #     "USDSEK",
-    #     "USDCNH",
-    #     "USDCAD",
-    # ]
-    symbols = ["XAGUSD" , "US30", "USTEC", "XAUUSD", "XTIUSD"]
-
+    symbols = ["EURAUD", "AUDUSD", "GBPJPY", "EURJPY", "USDJPY", "USDCHF", "GBPUSD", "EURUSD", "NZDUSD", "USDSEK", "USDCNH", "USDCAD", "XAUUSD", "XTIUSD", "XAGUSD", "US30", "USTEC"]
+    #symbols = ["XAUUSD"]
+    
     ml_trainer = MLTrader(symbols)
     ml_trainer.train_models()
-
+    
     mt5.shutdown()

@@ -1,10 +1,10 @@
 # models.py
 
-import pandas as pd
 import numpy as np
 from collections import defaultdict
 from config import INITIAL_VOLUME, MIN_PROFIT_THRESHOLD, get_next_session_number
 import logging
+from datetime import datetime
 
 class SymbolState:
     def __init__(self):
@@ -172,7 +172,7 @@ class TradingStatistics:
         final_stats["total_account_change"] = (
             f"{self.currency}{final_balance - initial_balance:.2f}"
         )
-        
+
         session_number = get_next_session_number()
 
         # Log to file using the existing logging configuration
@@ -181,14 +181,25 @@ class TradingStatistics:
             logging.info(f"{key}: {value}")
 
         # formatted output for easier reading
-        stats_str = f"===== TRADING SESSION {session_number} =====\n" + "\n".join(
-            [f"{key}: {value}" for key, value in final_stats.items()]
+        stats_str = (
+            f"{'='*20} TRADING SESSION {session_number} {'='*20}\n"
+            f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"💰 Initial Balance: {self.currency}{initial_balance:.2f}\n"
+            f"💸 Final Balance:   {self.currency}{final_balance:.2f}\n"
+            f"📈 Total Account Change: {self.currency}{final_balance - initial_balance:.2f}\n"
+            f"{'-'*50}\n"
+            f"🔍 Detailed Statistics:\n"
         )
 
-        # Append to a file with session-specific information
+        # Add more visual representation
+        for key, value in final_stats.items():
+            stats_str += f"• {key.replace('_', ' ').title()}: {value}\n"
+
+        stats_str += f"{'='*50}\n\n"
+
         try:
-            with open("trading_session_stats.txt", "a") as f:
-                f.write(stats_str + "\n\n")
+            with open("trading_session_stats.txt", "a", encoding="utf-8") as f:
+                f.write(stats_str)
         except Exception as e:
             logging.error(f"Failed to append statistics to file: {e}")
 
