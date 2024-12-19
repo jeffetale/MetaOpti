@@ -6,6 +6,8 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from scikeras.wrappers import KerasClassifier, KerasRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
@@ -18,6 +20,7 @@ from config import mt5, MODEL_SAVE_DIR
 from symbols import SYMBOLS as symbols
 from datetime import datetime
 import time
+import psutil
 
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
@@ -57,67 +60,205 @@ class MLTrainer:
         self.logger.info(f"📊 Retrieved {len(df)} data points for {symbol}")
         return prepare_training_data(df)
 
-    def create_direction_model(self, input_shape):
-        """Create neural network for direction classification"""
-        model = Sequential(
-            [
-                Dense(
-                    64,
-                    activation="relu",
-                    input_shape=(input_shape,),
-                    kernel_regularizer=tf.keras.regularizers.l2(0.001),
-                ),
-                BatchNormalization(),
-                Dropout(0.3),
-                Dense(
-                    32,
-                    activation="relu",
-                    kernel_regularizer=tf.keras.regularizers.l2(0.001),
-                ),
-                BatchNormalization(),
-                Dropout(0.3),
-                Dense(16, activation="relu"),
-                Dense(1, activation="sigmoid"),  # Binary classification
-            ]
-        )
+    def create_model_with_hp(self, model_type, input_shape, hp):
+        """
+        Create model with hyperparameter optimization support
+        """
+        if model_type == "direction":
+            model = Sequential(
+                [
+                    Dense(
+                        hp.get("hidden_units", 64),
+                        activation=hp.get("activation", "relu"),
+                        input_shape=(input_shape,),
+                        kernel_regularizer=tf.keras.regularizers.l2(
+                            hp.get("l2_reg", 0.001)
+                        ),
+                    ),
+                    BatchNormalization(),
+                    Dropout(hp.get("dropout_rate", 0.3)),
+                    Dense(
+                        hp.get("hidden_units", 64) // 2,
+                        activation=hp.get("activation", "relu"),
+                        kernel_regularizer=tf.keras.regularizers.l2(
+                            hp.get("l2_reg", 0.001)
+                        ),
+                    ),
+                    BatchNormalization(),
+                    Dropout(hp.get("dropout_rate", 0.3)),
+                    Dense(16, activation="relu"),
+                    Dense(1, activation="sigmoid"),
+                ]
+            )
 
-        model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss="binary_crossentropy",
-            metrics=["accuracy"],
-        )
+            optimizer = Adam(
+                learning_rate=hp.get("learning_rate", 0.001),
+                beta_1=hp.get("beta_1", 0.9),
+                beta_2=hp.get("beta_2", 0.999),
+            )
+
+            model.compile(
+                optimizer=optimizer, loss="binary_crossentropy", metrics=["accuracy"]
+            )
+        else:  # return model
+            model = Sequential(
+                [
+                    Dense(
+                        hp.get("hidden_units", 64),
+                        activation=hp.get("activation", "relu"),
+                        input_shape=(input_shape,),
+                        kernel_regularizer=tf.keras.regularizers.l2(
+                            hp.get("l2_reg", 0.001)
+                        ),
+                    ),
+                    BatchNormalization(),
+                    Dropout(hp.get("dropout_rate", 0.3)),
+                    Dense(
+                        hp.get("hidden_units", 64) // 2,
+                        activation=hp.get("activation", "relu"),
+                        kernel_regularizer=tf.keras.regularizers.l2(
+                            hp.get("l2_reg", 0.001)
+                        ),
+                    ),
+                    BatchNormalization(),
+                    Dropout(hp.get("dropout_rate", 0.3)),
+                    Dense(16, activation="relu"),
+                    Dense(1),
+                ]
+            )
+
+            optimizer = Adam(
+                learning_rate=hp.get("learning_rate", 0.001),
+                beta_1=hp.get("beta_1", 0.9),
+                beta_2=hp.get("beta_2", 0.999),
+            )
+
+            model.compile(
+                optimizer=optimizer, loss="mean_squared_error", metrics=["mae"]
+            )
+
         return model
 
-    def create_return_model(self, input_shape):
-        """Create neural network for return regression"""
-        model = Sequential(
-            [
-                Dense(
-                    64,
-                    activation="relu",
-                    input_shape=(input_shape,),
-                    kernel_regularizer=tf.keras.regularizers.l2(0.001),
-                ),
-                BatchNormalization(),
-                Dropout(0.3),
-                Dense(
-                    32,
-                    activation="relu",
-                    kernel_regularizer=tf.keras.regularizers.l2(0.001),
-                ),
-                BatchNormalization(),
-                Dropout(0.3),
-                Dense(16, activation="relu"),
-                Dense(1),  # Linear output for regression
+    def perform_hyperparameter_optimization(self, X_train_scaled, y_train, model_type):
+        """
+        Perform hyperparameter optimization with expanded parameter grid and advanced techniques
+        """
+        def check_memory():
+            memory = psutil.virtual_memory()
+            if memory.percent > 80:
+                return False
+            return True
+
+        # Default parameters to use when memory is constrained
+        default_params = {
+            "hidden_units": 64,
+            "dropout_rate": 0.3,
+            "batch_size": 32,
+            "epochs": 50,
+            "learning_rate": 0.001,
+            "l2_reg": 0.001,
+            "beta_1": 0.9,
+            "beta_2": 0.999
+        }
+
+        if not check_memory():
+            self.logger.warning("High memory usage detected. Using default parameters instead of optimization")
+
+            if model_type == "direction":
+                model = self.create_model_with_hp("direction", X_train_scaled.shape[1], default_params)
+            else:
+                model = self.create_model_with_hp("return", X_train_scaled.shape[1], default_params)
+
+            # Add callbacks for training
+            callbacks = [
+                EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+                ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5)
             ]
+
+            # Train with default parameters
+            history = model.fit(
+                X_train_scaled, y_train,
+                epochs=default_params['epochs'],
+                batch_size=default_params['batch_size'],
+                validation_split=0.2,
+                callbacks=callbacks,
+                verbose=0
+            )
+
+            return model, default_params
+
+        param_grid = {
+            "hidden_units": [32, 64, 128],
+            "dropout_rate": [0.2, 0.3, 0.4],
+            "batch_size": [16, 32, 64],
+            "epochs": [50, 100, 150],
+            "learning_rate": [0.0001, 0.001, 0.01],
+            "l2_reg": [0.0001, 0.001, 0.01],
+            "beta_1": [0.9, 0.95],
+            "beta_2": [0.999, 0.9999],
+        }
+
+        # Create base model wrapper with activation set in the model creation
+        if model_type == "direction":
+            model_wrapper = KerasClassifier(
+                model=lambda: self.create_model_with_hp(
+                    "direction",
+                    X_train_scaled.shape[1],
+                    {"activation": "relu", **default_params},
+                ),
+                verbose=0,
+            )
+            scoring = "accuracy"
+        else:
+            model_wrapper = KerasRegressor(
+                model=lambda: self.create_model_with_hp(
+                    "return",
+                    X_train_scaled.shape[1],
+                    {"activation": "relu", **default_params},
+                ),
+                verbose=0,
+            )
+            scoring = "neg_mean_absolute_error"
+
+        # Initialize GridSearchCV with advanced configuration
+        grid_search = GridSearchCV(
+            estimator=model_wrapper,
+            param_grid=param_grid,
+            cv=3,
+            scoring=scoring,
+            n_jobs=-1,
+            verbose=1,
+            return_train_score=True,
+            refit=True,
         )
 
-        model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss="mean_squared_error",
-            metrics=["mae"],
+        # Perform search
+        self.logger.info(f"Starting GridSearchCV for {model_type} model...")
+        grid_result = grid_search.fit(X_train_scaled, y_train)
+
+        # Log results
+        self.logger.info(
+            f"\nBest {model_type} model parameters: {grid_result.best_params_}"
         )
-        return model
+        self.logger.info(
+            f"Best {model_type} model score: {grid_result.best_score_:.4f}"
+        )
+
+        # Create detailed performance report
+        cv_results = pd.DataFrame(grid_result.cv_results_)
+        best_runs = cv_results.nlargest(5, "mean_test_score")
+
+        self.logger.info("\nTop 5 performing parameter combinations:")
+        for idx, run in best_runs.iterrows():
+            self.logger.info(
+                f"""
+            Parameters: {dict((k, run[f'param_{k}']) for k in param_grid.keys())}
+            Mean Test Score: {run['mean_test_score']:.4f}
+            Mean Train Score: {run['mean_train_score']:.4f}
+            """
+            )
+
+        return grid_result.best_estimator_.model, grid_result.best_params_
 
     def train_models(self):
         self.training_stats["start_time"] = datetime.now()
@@ -180,6 +321,7 @@ class MLTrainer:
                         list(y_return) * ((len(X_resampled) // len(y_return)) + 1)
                     )[: len(X_resampled)]
 
+                    # Split the resampled data
                     (
                         X_train,
                         X_test,
@@ -200,71 +342,65 @@ class MLTrainer:
                     X_train_scaled = scaler.fit_transform(X_train)
                     X_test_scaled = scaler.transform(X_test)
 
-                    # Create and train direction model
-                    direction_model = self.create_direction_model(
-                        X_train_scaled.shape[1]
+                    # Perform hyperparameter optimization for direction model
+                    best_direction_model, best_direction_params = self.perform_hyperparameter_optimization(
+                        X_train_scaled, y_dir_train, "direction"
                     )
 
-                    # Callbacks for training
-                    callbacks = [
-                        EarlyStopping(
-                            monitor="val_loss",
-                            patience=15,
-                            restore_best_weights=True,
-                            min_delta=0.001,
-                            verbose=1,
-                        ),
-                        ReduceLROnPlateau(
-                            monitor="val_loss", factor=0.5, patience=7, min_lr=0.000001
-                        ),
-                    ]
-
-                    # Train direction model
-                    direction_history = direction_model.fit(
-                        X_train_scaled,
-                        y_dir_train,
-                        validation_split=0.2,
-                        epochs=150,
-                        batch_size=32,
-                        callbacks=callbacks,
-                        verbose=1,
+                    # Perform hyperparameter optimization for return model
+                    best_return_model, best_return_params = self.perform_hyperparameter_optimization(
+                        X_train_scaled, y_ret_train, "return"
                     )
 
-                    # Create and train return model
-                    return_model = self.create_return_model(X_train_scaled.shape[1])
+                    # Save hyperparameter optimization results
+                    optimization_results = {
+                        "direction_model": {
+                            "best_params": best_direction_params,
+                            "training_history": best_direction_model.history.history if hasattr(best_direction_model, 'history') else None
+                        },
+                        "return_model": {
+                            "best_params": best_return_params,
+                            "training_history": best_return_model.history.history if hasattr(best_return_model, 'history') else None
+                        }
+                    }
 
-                    return_history = return_model.fit(
-                        X_train_scaled,
-                        y_ret_train,
-                        validation_split=0.2,
-                        epochs=150,
-                        batch_size=32,
-                        callbacks=callbacks,
-                        verbose=1,
+                    joblib.dump(
+                        optimization_results,
+                        os.path.join(MODEL_SAVE_DIR, f"{symbol}_optimization_results.pkl")
                     )
 
                     # Evaluate models
-                    dir_loss, dir_accuracy = direction_model.evaluate(
-                        X_test_scaled, y_dir_test
+                    dir_loss, dir_accuracy = best_direction_model.evaluate(
+                        X_test_scaled, y_dir_test, verbose=0
                     )
-                    ret_loss, ret_mae = return_model.evaluate(X_test_scaled, y_ret_test)
+                    ret_loss, ret_mae = best_return_model.evaluate(
+                        X_test_scaled, y_ret_test, verbose=0
+                    )
 
-                    logging.info(f"Direction Model - Test Accuracy: {dir_accuracy}")
-                    logging.info(f"Return Model - Test MAE: {ret_mae}")
+                    self.logger.info(f"Direction Model - Test Accuracy: {dir_accuracy:.4f}")
+                    self.logger.info(f"Return Model - Test MAE: {ret_mae:.4f}")
 
                     # Save models and scaler
-                    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)  # Create directory if it doesn't exist
+                    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 
-                    # Use save() method without additional options
-                    direction_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_direction_model.keras"))
-                    return_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_return_model.keras"))
+                    # Save the best models
+                    best_direction_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_direction_model.keras"))
+                    best_return_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_return_model.keras"))
                     joblib.dump(scaler, os.path.join(MODEL_SAVE_DIR, f"{symbol}_scaler.pkl"))
 
                     # Save model metadata
                     model_metadata = {
                         "features": X.columns.tolist(),
-                        "direction_model_architecture": str(direction_model.summary()),
-                        "return_model_architecture": str(return_model.summary()),
+                        "direction_model_params": best_direction_params,
+                        "return_model_params": best_return_params,
+                        "direction_model_performance": {
+                            "accuracy": dir_accuracy,
+                            "loss": dir_loss
+                        },
+                        "return_model_performance": {
+                            "mae": ret_mae,
+                            "loss": ret_loss
+                        }
                     }
                     joblib.dump(model_metadata, os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl"))
 
@@ -313,24 +449,42 @@ class MLTrainer:
         ).total_seconds()
 
         self.logger.info(f"\n{'='*50}")
-        self.logger.info("""📊 TRAINING SESSION SUMMARY""")
-        self.logger.info(
-            f"""
-            📈 Statistics:
-            ✅ Total Symbols: {self.training_stats['total_symbols']}
-            ⭐ Successfully Trained: {self.training_stats['trained_symbols']}
-            ❌ Failed: {self.training_stats['failed_symbols']}
-            ⏭️ Skipped: {self.training_stats['skipped_symbols']}
-            
-            ⏱️ Timing:
-            Total Time: {total_time:.2f} seconds
-            Avg Time/Symbol: {sum(self.training_stats['training_times'].values())/len(self.training_stats['training_times']):.2f} seconds
-            
-            📊 Individual Symbol Times:
-            {'-'*30}"""
-        )
-        for symbol, time_taken in self.training_stats["training_times"].items():
-            self.logger.info(f"    {symbol}: {time_taken:.2f} seconds")
+        self.logger.info("📊 TRAINING SESSION SUMMARY")
+
+        summary_stats = {
+            "📈 Statistics": {
+                "✅ Total Symbols": self.training_stats["total_symbols"],
+                "⭐ Successfully Trained": self.training_stats["trained_symbols"],
+                "❌ Failed": self.training_stats["failed_symbols"],
+                "⏭️ Skipped": self.training_stats["skipped_symbols"],
+            },
+            "⏱️ Timing": {"Total Time": f"{total_time:.2f} seconds"},
+        }
+
+        if self.training_stats["training_times"]:
+            avg_time = sum(self.training_stats["training_times"].values()) / len(
+                self.training_stats["training_times"]
+            )
+            summary_stats["⏱️ Timing"]["Avg Time/Symbol"] = f"{avg_time:.2f} seconds"
+
+            self.logger.info(
+                "\n".join(
+                    f"{category}\n" + "\n".join(f"    {k}: {v}" for k, v in stats.items())
+                    for category, stats in summary_stats.items()
+                )
+            )
+
+            self.logger.info(f"\n📊 Individual Symbol Times:\n{'-'*30}")
+            for symbol, time_taken in self.training_stats["training_times"].items():
+                self.logger.info(f"    {symbol}: {time_taken:.2f} seconds")
+        else:
+            self.logger.warning("No symbols were successfully trained in this session")
+            self.logger.info(
+                "\n".join(
+                    f"{category}\n" + "\n".join(f"    {k}: {v}" for k, v in stats.items())
+                    for category, stats in summary_stats.items()
+                )
+            )
 
         self.logger.info(f"{'='*50}")
         self.logger.info("🏁 Model training completed!")
