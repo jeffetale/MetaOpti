@@ -13,3 +13,5 @@ trading_2.py
 ml/ml_models/
 ml/ml/ml_models
 ml_predictor.py
+models.py
+trading.py

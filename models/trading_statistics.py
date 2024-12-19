@@ -5,6 +5,9 @@ import logging
 from datetime import datetime
 import os
 
+from logging_config import setup_comprehensive_logging
+setup_comprehensive_logging()
+
 def get_next_session_number(filename="session_tracker.txt"):
     try:
         if not os.path.exists(filename):

@@ -7,46 +7,76 @@ from config import TIMEFRAME, NEUTRAL_CONFIDENCE_THRESHOLD, mt5, NEUTRAL_HOLD_DU
 from models.trading_state import trading_state
 from ml.features.technical_indicators import TechnicalIndicators
 
+from logging_config import setup_comprehensive_logging
+setup_comprehensive_logging()
 
 class SignalGenerator:
     def __init__(self, ml_predictor):
         self.logger = logging.getLogger(__name__)
         self.ml_predictor = ml_predictor
+        self.logger.info(
+            f"🎯 Initialized SignalGenerator with predictor: {ml_predictor.__class__.__name__}"
+        )
 
     def get_signal(self, symbol):
         """Generate trading signals with multiple confirmation methods"""
+        self.logger.debug(f"🔄 Starting signal generation for {symbol}")
+
         if not self._should_trade_symbol(symbol):
+            self.logger.info(
+                f"⛔ {symbol} trading restricted - skipping signal generation"
+            )
             return None, None, 0
 
-        # Get market data
         df = self._get_market_data(symbol)
         if df is None:
+            self.logger.warning(f"❌ Failed to fetch market data for {symbol}")
             return None, None, 0
+
+        self.logger.debug(f"📊 Retrieved {len(df)} data points for {symbol}")
 
         # Calculate indicators and get current market state
         current_state = self._calculate_indicators(df)
         if current_state is None:
+            self.logger.warning(f"⚠️ Failed to calculate indicators for {symbol}")
             return None, None, 0
 
         try:
             # Get ML prediction using the ml_predictor instance
+            self.logger.debug(f"🤖 Getting ML prediction for {symbol}")
             ml_signal, ml_confidence, ml_predicted_return = self.ml_predictor.predict()
+
+            self.logger.info(
+                f"""💡 {symbol} ML Prediction:
+                Signal={ml_signal}
+                Confidence={ml_confidence:.4f}
+                Predicted Return={ml_predicted_return:.4f}"""
+            )
 
             # Check for neutral state
             if self._check_neutral_state(symbol, ml_confidence, ml_predicted_return):
-                self.logger.info(f"{symbol} entered NEUTRAL state")
+                self.logger.info(
+                    f"""⚖️ {symbol} entered NEUTRAL state:
+                    Confidence: {ml_confidence:.4f}
+                    Predicted Return: {ml_predicted_return:.4f}"""
+                )
                 return "neutral", current_state["ATR"], 0
 
             # Check if symbol is in neutral hold
             if not self._check_neutral_hold(symbol):
+                self.logger.debug(f"⏸️ {symbol} in neutral hold period")
                 return None, None, 0
 
             # Trade Direction Repetition Prevention
             if not self._check_trade_direction_valid(symbol, ml_signal):
+                self.logger.info(
+                    f"🚫 {symbol} - {ml_signal} signal suppressed due to recent trade direction"
+                )
                 return None, None, 0
 
             # Generate technical signals
             tech_signal = self._generate_technical_signal(current_state)
+            self.logger.debug(f"📈 {symbol} Technical Signal: {tech_signal}")
 
             # Combine signals for final decision
             final_signal, potential_profit = self._combine_signals(
@@ -58,24 +88,20 @@ class SignalGenerator:
                 tech_signal,
             )
 
-            # Detailed Logging
-            self._log_analysis(
-                symbol,
-                ml_signal,
-                ml_confidence,
-                ml_predicted_return,
-                tech_signal,
-                final_signal,
+            # Final decision logging
+            self.logger.info(
+                f"""✨ {symbol} Final Decision:
+                Signal={final_signal}
+                Potential Profit={potential_profit:.4f}"""
             )
 
             return final_signal, current_state["ATR"], potential_profit
 
         except Exception as e:
-            self.logger.error(f"Signal generation error for {symbol}: {e}")
-            return (
-                None,
-                None,
+            self.logger.error(
+                f"💥 Signal generation error for {symbol}: {str(e)}", exc_info=True
             )
+            return None, None, 0
 
     def _generate_technical_signal(self, current_state):
         """Generate trading signal based on technical indicators"""

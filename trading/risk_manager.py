@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from config import MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, INITIAL_VOLUME
 from models.trading_state import trading_state
 
+from logging_config import setup_comprehensive_logging
+setup_comprehensive_logging()
 
 class RiskManager:
     def __init__(self):

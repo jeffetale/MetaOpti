@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 from config import POSITION_REVERSAL_THRESHOLD, mt5
 
+from logging_config import setup_comprehensive_logging
+setup_comprehensive_logging()
 
 class PositionManager:
     def __init__(self, order_manager, risk_manager):

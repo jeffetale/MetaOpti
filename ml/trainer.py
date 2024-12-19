@@ -16,21 +16,45 @@ from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_training_data
 from config import mt5, MODEL_SAVE_DIR
 from symbols import SYMBOLS as symbols
+from datetime import datetime
+import time
 
+from logging_config import setup_comprehensive_logging
+setup_comprehensive_logging()
 
 class MLTrainer:
     def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M1, look_back=1000):
+        self.logger = logging.getLogger(__name__)
         self.symbols = symbols
         self.timeframe = timeframe
         self.look_back = look_back
         self.models = {}
+        self.training_stats = {
+            "total_symbols": len(symbols),
+            "trained_symbols": 0,
+            "failed_symbols": 0,
+            "skipped_symbols": 0,
+            "start_time": None,
+            "end_time": None,
+            "training_times": {},
+        }
+
+        self.logger.info(
+            f"""🚀 Initializing MLTrainer:
+            Symbols: {len(symbols)}
+            Timeframe: {timeframe}
+            Look Back: {look_back}"""
+        )
 
     def prepare_data(self, symbol):
-        """Prepare data for neural network training"""
+        self.logger.info(f"📥 Preparing data for {symbol}")
         df = fetch_historical_data(symbol, self.timeframe, self.look_back)
+
         if df is None:
+            self.logger.warning(f"⚠️ No historical data retrieved for {symbol}")
             return None, None, None
 
+        self.logger.info(f"📊 Retrieved {len(df)} data points for {symbol}")
         return prepare_training_data(df)
 
     def create_direction_model(self, input_shape):
@@ -96,25 +120,57 @@ class MLTrainer:
         return model
 
     def train_models(self):
+        self.training_stats["start_time"] = datetime.now()
+        self.logger.info(
+            f"""
+            {'='*50}
+            🎮 STARTING MODEL TRAINING SESSION
+            🕒 Time: {self.training_stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}
+            📊 Total Symbols: {len(self.symbols)}
+            {'='*50}
+            """
+        )
+
         for symbol in self.symbols:
-            logging.info(f"Training models for {symbol}")
+            symbol_start_time = time.time()
+            self.logger.info(f"\n{'='*50}")
+            self.logger.info(f"⚡ Training models for {symbol}")
+            self.logger.info(f"{'='*50}")
+
             try:
                 X, y_direction, y_return = self.prepare_data(symbol)
 
                 # Additional safety checks
                 if X is None or len(X) == 0:
-                    logging.warning(
-                        f"Skipping {symbol} due to insufficient or invalid data"
+                    self.logger.warning(
+                        f"""❌ Skipping {symbol}:
+                        Reason: Insufficient or invalid data
+                        Data shape: X={None if X is None else X.shape}"""
                     )
+                    self.training_stats['skipped_symbols'] += 1
                     continue
 
                 # If only one class exists, skip this symbol
                 if len(y_direction.unique()) < 2:
-                    logging.warning(f"Skipping {symbol} - only one class present")
+                    self.logger.warning(
+                        f"""❌ Skipping {symbol}:
+                        Reason: Only one class present
+                        Classes: {y_direction.unique()}"""
+                    )
+                    self.training_stats["skipped_symbols"] += 1
                     continue
+
+                self.logger.info(
+                    f"""📊 {symbol} Data Summary:
+                    Samples: {len(X)}
+                    Features: {len(X.columns)}
+                    Class Distribution: {dict(y_direction.value_counts(normalize=True))}"""
+                )
 
                 # Apply SMOTE for balancing
                 try:
+                    self.logger.info(f"⚖️ Applying SMOTE balancing for {symbol}")
+
                     smote = SMOTE(random_state=42)
                     X_resampled, y_direction_resampled = smote.fit_resample(
                         X, y_direction
@@ -212,21 +268,73 @@ class MLTrainer:
                     }
                     joblib.dump(model_metadata, os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl"))
 
-                except Exception as e:
-                    logging.error(f"SMOTE or training error for {symbol}: {str(e)}")
-                    import traceback
+                    self.logger.info(
+                        f"""✨ {symbol} Direction Model Results:
+                        Accuracy: {dir_accuracy:.4f}
+                        Loss: {dir_loss:.4f}"""
+                    )
 
-                    traceback.print_exc()
+                    self.logger.info(
+                        f"""📈 {symbol} Return Model Results:
+                        MAE: {ret_mae:.4f}
+                        Loss: {ret_loss:.4f}"""
+                    )
+
+                    training_time = time.time() - symbol_start_time
+                    self.training_stats["training_times"][symbol] = training_time
+                    self.training_stats["trained_symbols"] += 1
+
+                    self.logger.info(
+                        f"""✅ {symbol} Training Complete:
+                        Time: {training_time:.2f} seconds"""
+                    )
+
+                except Exception as e:
+                    self.logger.error(
+                        f"""💥 Training Error - {symbol}:
+                        Error: {str(e)}""",
+                        exc_info=True,
+                    )
+                    self.training_stats["failed_symbols"] += 1
                     continue
 
             except Exception as e:
-                logging.error(f"Error processing {symbol}: {str(e)}")
-                import traceback
-
-                traceback.print_exc()
+                self.logger.error(
+                    f"""🚨 Process Error - {symbol}:
+                    Error: {str(e)}""",
+                    exc_info=True,
+                )
+                self.training_stats["failed_symbols"] += 1
                 continue
 
-        logging.info("Model training completed.")
+        self.training_stats["end_time"] = datetime.now()
+        total_time = (
+            self.training_stats["end_time"] - self.training_stats["start_time"]
+        ).total_seconds()
+
+        self.logger.info(f"\n{'='*50}")
+        self.logger.info("""📊 TRAINING SESSION SUMMARY""")
+        self.logger.info(
+            f"""
+            📈 Statistics:
+            ✅ Total Symbols: {self.training_stats['total_symbols']}
+            ⭐ Successfully Trained: {self.training_stats['trained_symbols']}
+            ❌ Failed: {self.training_stats['failed_symbols']}
+            ⏭️ Skipped: {self.training_stats['skipped_symbols']}
+            
+            ⏱️ Timing:
+            Total Time: {total_time:.2f} seconds
+            Avg Time/Symbol: {sum(self.training_stats['training_times'].values())/len(self.training_stats['training_times']):.2f} seconds
+            
+            📊 Individual Symbol Times:
+            {'-'*30}"""
+        )
+        for symbol, time_taken in self.training_stats["training_times"].items():
+            self.logger.info(f"    {symbol}: {time_taken:.2f} seconds")
+
+        self.logger.info(f"{'='*50}")
+        self.logger.info("🏁 Model training completed!")
+
 
 if __name__ == "__main__":
     # Initialize MT5 connection

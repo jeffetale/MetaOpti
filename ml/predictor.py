@@ -9,6 +9,8 @@ from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_prediction_data
 import os
 
+from logging_config import setup_comprehensive_logging
+setup_comprehensive_logging()
 
 class MLPredictor:
     def __init__(self, symbol):
