@@ -64,201 +64,181 @@ class MLTrainer:
         """
         Create model with hyperparameter optimization support
         """
+        # Create optimizer with hyperparameters
+        optimizer = Adam(
+            learning_rate=hp['learning_rate'],
+            beta_1=hp['beta_1'],
+            beta_2=hp['beta_2']
+        )
+        
         if model_type == "direction":
-            model = Sequential(
-                [
-                    Dense(
-                        hp.get("hidden_units", 64),
-                        activation=hp.get("activation", "relu"),
-                        input_shape=(input_shape,),
-                        kernel_regularizer=tf.keras.regularizers.l2(
-                            hp.get("l2_reg", 0.001)
-                        ),
-                    ),
-                    BatchNormalization(),
-                    Dropout(hp.get("dropout_rate", 0.3)),
-                    Dense(
-                        hp.get("hidden_units", 64) // 2,
-                        activation=hp.get("activation", "relu"),
-                        kernel_regularizer=tf.keras.regularizers.l2(
-                            hp.get("l2_reg", 0.001)
-                        ),
-                    ),
-                    BatchNormalization(),
-                    Dropout(hp.get("dropout_rate", 0.3)),
-                    Dense(16, activation="relu"),
-                    Dense(1, activation="sigmoid"),
-                ]
-            )
-
-            optimizer = Adam(
-                learning_rate=hp.get("learning_rate", 0.001),
-                beta_1=hp.get("beta_1", 0.9),
-                beta_2=hp.get("beta_2", 0.999),
-            )
-
+            model = Sequential([
+                Dense(hp['hidden_units'], 
+                    activation=hp['activation'],
+                    input_shape=(input_shape,),
+                    kernel_regularizer=tf.keras.regularizers.l2(hp['l2_reg'])),
+                BatchNormalization(),
+                Dropout(hp['dropout_rate']),
+                Dense(hp['hidden_units'] // 2,
+                    activation=hp['activation'],
+                    kernel_regularizer=tf.keras.regularizers.l2(hp['l2_reg'])),
+                BatchNormalization(),
+                Dropout(hp['dropout_rate']),
+                Dense(16, activation="relu"),
+                Dense(1, activation="sigmoid")
+            ])
+            
             model.compile(
-                optimizer=optimizer, loss="binary_crossentropy", metrics=["accuracy"]
+                optimizer=optimizer,
+                loss="binary_crossentropy",
+                metrics=["accuracy"]
             )
-        else:  # return model
-            model = Sequential(
-                [
-                    Dense(
-                        hp.get("hidden_units", 64),
-                        activation=hp.get("activation", "relu"),
-                        input_shape=(input_shape,),
-                        kernel_regularizer=tf.keras.regularizers.l2(
-                            hp.get("l2_reg", 0.001)
-                        ),
-                    ),
-                    BatchNormalization(),
-                    Dropout(hp.get("dropout_rate", 0.3)),
-                    Dense(
-                        hp.get("hidden_units", 64) // 2,
-                        activation=hp.get("activation", "relu"),
-                        kernel_regularizer=tf.keras.regularizers.l2(
-                            hp.get("l2_reg", 0.001)
-                        ),
-                    ),
-                    BatchNormalization(),
-                    Dropout(hp.get("dropout_rate", 0.3)),
-                    Dense(16, activation="relu"),
-                    Dense(1),
-                ]
-            )
-
-            optimizer = Adam(
-                learning_rate=hp.get("learning_rate", 0.001),
-                beta_1=hp.get("beta_1", 0.9),
-                beta_2=hp.get("beta_2", 0.999),
-            )
-
+        else:
+            model = Sequential([
+                Dense(hp['hidden_units'],
+                    activation=hp['activation'],
+                    input_shape=(input_shape,),
+                    kernel_regularizer=tf.keras.regularizers.l2(hp['l2_reg'])),
+                BatchNormalization(),
+                Dropout(hp['dropout_rate']),
+                Dense(hp['hidden_units'] // 2,
+                    activation=hp['activation'],
+                    kernel_regularizer=tf.keras.regularizers.l2(hp['l2_reg'])),
+                BatchNormalization(),
+                Dropout(hp['dropout_rate']),
+                Dense(16, activation="relu"),
+                Dense(1)
+            ])
+            
             model.compile(
-                optimizer=optimizer, loss="mean_squared_error", metrics=["mae"]
+                optimizer=optimizer,
+                loss="mean_squared_error",
+                metrics=["mae"]
             )
-
+        
         return model
 
     def perform_hyperparameter_optimization(self, X_train_scaled, y_train, model_type):
         """
-        Perform hyperparameter optimization with expanded parameter grid and advanced techniques
+        Perform hyperparameter optimization with proper model wrapping
         """
-        def check_memory():
-            memory = psutil.virtual_memory()
-            if memory.percent > 80:
-                return False
-            return True
+        def create_model(hidden_units, dropout_rate, activation, l2_reg, learning_rate, beta_1, beta_2):
+            hp = {
+                'hidden_units': hidden_units,
+                'dropout_rate': dropout_rate,
+                'activation': activation,
+                'l2_reg': l2_reg,
+                'learning_rate': learning_rate,
+                'beta_1': beta_1,
+                'beta_2': beta_2
+            }
+            return self.create_model_with_hp(model_type, X_train_scaled.shape[1], hp)
 
-        # Default parameters to use when memory is constrained
-        default_params = {
-            "hidden_units": 64,
-            "dropout_rate": 0.3,
-            "batch_size": 32,
-            "epochs": 50,
-            "learning_rate": 0.001,
-            "l2_reg": 0.001,
-            "beta_1": 0.9,
-            "beta_2": 0.999
-        }
-
-        if not check_memory():
-            self.logger.warning("High memory usage detected. Using default parameters instead of optimization")
-
-            if model_type == "direction":
-                model = self.create_model_with_hp("direction", X_train_scaled.shape[1], default_params)
-            else:
-                model = self.create_model_with_hp("return", X_train_scaled.shape[1], default_params)
-
-            # Add callbacks for training
-            callbacks = [
-                EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-                ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5)
-            ]
-
-            # Train with default parameters
-            history = model.fit(
-                X_train_scaled, y_train,
-                epochs=default_params['epochs'],
-                batch_size=default_params['batch_size'],
-                validation_split=0.2,
-                callbacks=callbacks,
-                verbose=0
-            )
-
-            return model, default_params
-
+        # Define the parameter grid
         param_grid = {
-            "hidden_units": [32, 64, 128],
-            "dropout_rate": [0.2, 0.3, 0.4],
-            "batch_size": [16, 32, 64],
-            "epochs": [50, 100, 150],
-            "learning_rate": [0.0001, 0.001, 0.01],
-            "l2_reg": [0.0001, 0.001, 0.01],
-            "beta_1": [0.9, 0.95],
-            "beta_2": [0.999, 0.9999],
+            'hidden_units': [32, 64],
+            'dropout_rate': [0.2, 0.3],
+            'activation': ['relu'],
+            'l2_reg': [0.001],
+            'learning_rate': [0.001, 0.01],
+            'beta_1': [0.9],
+            'beta_2': [0.999],
+            'batch_size': [32, 64],
+            'epochs': [30, 50]
         }
 
-        # Create base model wrapper with activation set in the model creation
+        # Create the correct wrapper
         if model_type == "direction":
             model_wrapper = KerasClassifier(
-                model=lambda: self.create_model_with_hp(
-                    "direction",
-                    X_train_scaled.shape[1],
-                    {"activation": "relu", **default_params},
-                ),
-                verbose=0,
+                model=create_model,
+                verbose=0
             )
-            scoring = "accuracy"
+            scoring = 'accuracy'
         else:
             model_wrapper = KerasRegressor(
-                model=lambda: self.create_model_with_hp(
-                    "return",
-                    X_train_scaled.shape[1],
-                    {"activation": "relu", **default_params},
-                ),
-                verbose=0,
+                model=create_model,
+                verbose=0
             )
-            scoring = "neg_mean_absolute_error"
+            scoring = 'neg_mean_absolute_error'
 
-        # Initialize GridSearchCV with advanced configuration
-        grid_search = GridSearchCV(
-            estimator=model_wrapper,
-            param_grid=param_grid,
-            cv=3,
-            scoring=scoring,
-            n_jobs=-1,
-            verbose=1,
-            return_train_score=True,
-            refit=True,
-        )
-
-        # Perform search
-        self.logger.info(f"Starting GridSearchCV for {model_type} model...")
-        grid_result = grid_search.fit(X_train_scaled, y_train)
-
-        # Log results
-        self.logger.info(
-            f"\nBest {model_type} model parameters: {grid_result.best_params_}"
-        )
-        self.logger.info(
-            f"Best {model_type} model score: {grid_result.best_score_:.4f}"
-        )
-
-        # Create detailed performance report
-        cv_results = pd.DataFrame(grid_result.cv_results_)
-        best_runs = cv_results.nlargest(5, "mean_test_score")
-
-        self.logger.info("\nTop 5 performing parameter combinations:")
-        for idx, run in best_runs.iterrows():
-            self.logger.info(
-                f"""
-            Parameters: {dict((k, run[f'param_{k}']) for k in param_grid.keys())}
-            Mean Test Score: {run['mean_test_score']:.4f}
-            Mean Train Score: {run['mean_train_score']:.4f}
-            """
+        try:
+            # Initialize and run RandomizedSearchCV
+            random_search = RandomizedSearchCV(
+                estimator=model_wrapper,
+                param_distributions=param_grid,
+                n_iter=5,
+                cv=3,
+                scoring=scoring,
+                n_jobs=1,
+                verbose=1,
+                return_train_score=True,
+                random_state=42
             )
+            
+            search_start_time = time.time()
+            random_search_result = random_search.fit(X_train_scaled, y_train)
+            search_time = time.time() - search_start_time
 
-        return grid_result.best_estimator_.model, grid_result.best_params_
+            self.logger.info(f"\nHyperparameter optimization completed in {search_time:.2f} seconds")
+            self.logger.info(f"Best {model_type} model parameters: {random_search_result.best_params_}")
+            self.logger.info(f"Best {model_type} model score: {random_search_result.best_score_:.4f}")
+
+            # Return the best model and parameters
+            best_params = random_search_result.best_params_
+            best_model = create_model(
+                hidden_units=best_params['hidden_units'],
+                dropout_rate=best_params['dropout_rate'],
+                activation=best_params['activation'],
+                l2_reg=best_params['l2_reg'],
+                learning_rate=best_params['learning_rate'],
+                beta_1=best_params['beta_1'],
+                beta_2=best_params['beta_2']
+            )
+            
+            # Train the best model with the best parameters
+            history = best_model.fit(
+                X_train_scaled,
+                y_train,
+                batch_size=best_params['batch_size'],
+                epochs=best_params['epochs'],
+                verbose=0
+            )
+            
+            return best_model, best_params
+
+        except Exception as e:
+            self.logger.error(f"Error during hyperparameter optimization: {str(e)}")
+            # Create model with default parameters
+            default_params = {
+                'hidden_units': 64,
+                'dropout_rate': 0.3,
+                'activation': 'relu',
+                'l2_reg': 0.001,
+                'learning_rate': 0.001,
+                'beta_1': 0.9,
+                'beta_2': 0.999
+            }
+            
+            default_model = create_model(
+                hidden_units=default_params['hidden_units'],
+                dropout_rate=default_params['dropout_rate'],
+                activation=default_params['activation'],
+                l2_reg=default_params['l2_reg'],
+                learning_rate=default_params['learning_rate'],
+                beta_1=default_params['beta_1'],
+                beta_2=default_params['beta_2']
+            )
+            
+            # Train the default model
+            history = default_model.fit(
+                X_train_scaled,
+                y_train,
+                batch_size=32,
+                epochs=50,
+                verbose=0
+            )
+            
+            return default_model, default_params
 
     def train_models(self):
         self.training_stats["start_time"] = datetime.now()
