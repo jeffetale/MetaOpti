@@ -1,5 +1,5 @@
-import pandas as pd
-import numpy as np
+# ml/predictor.py
+
 import tensorflow as tf
 import joblib
 import logging
@@ -28,16 +28,16 @@ class MLPredictor:
         """Load pre-trained models for a specific symbol"""
         try:
             # Load metadata first to get feature names
-            metadata = joblib.load(f"ml/ml_models/{self.symbol}_metadata.pkl")
+            metadata = joblib.load(f"ml_models/{self.symbol}_metadata.pkl")
             self.features = metadata.get("features", [])
 
             self.direction_model = tf.keras.models.load_model(
-                f"ml/ml_models/{self.symbol}_direction_model.keras"
+                f"ml_models/{self.symbol}_direction_model.keras"
             )
             self.return_model = tf.keras.models.load_model(
-                f"ml/ml_models/{self.symbol}_return_model.keras"
+                f"ml_models/{self.symbol}_return_model.keras"
             )
-            self.scaler = joblib.load(f"ml/ml_models/{self.symbol}_scaler.pkl")
+            self.scaler = joblib.load(f"ml_models/{self.symbol}_scaler.pkl")
 
             logging.info(f"Models loaded for {self.symbol}")
         except FileNotFoundError:

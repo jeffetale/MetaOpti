@@ -1,4 +1,4 @@
-# ml_trainer.py
+# ml/trainer.py
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,7 @@ import os
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_training_data
 from config import mt5
+from symbols import SYMBOLS as symbols
 
 
 class MLTrainer:
@@ -233,24 +234,6 @@ if __name__ == "__main__":
     if not mt5.initialize():
         logging.error("MT5 initialization failed")
         exit()
-
-    # Symbols from config to train models
-    symbols = [
-        "XAUUSD",
-        "XTIUSD",
-        "XAGUSD",
-        "US30",
-        "USTEC",
-        "BTCUSD",
-        "ETHUSD",
-        "BCHUSD",
-        "DOGUSD",
-        "LTCUSD",
-        "EURJPY",
-        "USDJPY",
-        "GBPUSD",
-        "EURUSD",
-    ]
 
     ml_trainer = MLTrainer(symbols)
     ml_trainer.train_models()

@@ -1,4 +1,4 @@
-# technical_indicators.py
+# ml/features/technical_indicators.py
 
 import numpy as np
 import pandas as pd
