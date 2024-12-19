@@ -176,15 +176,15 @@ class SignalGenerator:
         if total_strength >= required_strength:
             # Signals must agree or ML confidence must be very high
             if ml_signal == tech_signal or (
-                ml_confidence > 0.8 and ml_predicted_return > 0.002
+                ml_confidence > 0.57 and ml_predicted_return > 0.002
             ):
                 return ml_signal, potential_profit
             elif (
-                ml_confidence > 0.9
+                ml_confidence > 0.62
             ):  # Very high ML confidence can override tech signal
                 return ml_signal, potential_profit
 
-        return None, 0
+        return "neutral", 0
 
     def _check_neutral_hold(self, symbol):
         """Check if symbol should remain in neutral hold"""

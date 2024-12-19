@@ -1,6 +1,5 @@
 # ml/trainer.py
 
-import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
@@ -15,7 +14,7 @@ import logging
 import os
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_training_data
-from config import mt5
+from config import mt5, MODEL_SAVE_DIR
 from symbols import SYMBOLS as symbols
 
 
@@ -198,12 +197,12 @@ class MLTrainer:
                     logging.info(f"Return Model - Test MAE: {ret_mae}")
 
                     # Save models and scaler
-                    os.makedirs("ml_models", exist_ok=True)
+                    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)  # Create directory if it doesn't exist
 
                     # Use save() method without additional options
-                    direction_model.save(f"ml_models/{symbol}_direction_model.keras")
-                    return_model.save(f"ml_models/{symbol}_return_model.keras")
-                    joblib.dump(scaler, f"ml_models/{symbol}_scaler.pkl")
+                    direction_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_direction_model.keras"))
+                    return_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_return_model.keras"))
+                    joblib.dump(scaler, os.path.join(MODEL_SAVE_DIR, f"{symbol}_scaler.pkl"))
 
                     # Save model metadata
                     model_metadata = {
@@ -211,7 +210,7 @@ class MLTrainer:
                         "direction_model_architecture": str(direction_model.summary()),
                         "return_model_architecture": str(return_model.summary()),
                     }
-                    joblib.dump(model_metadata, f"ml_models/{symbol}_metadata.pkl")
+                    joblib.dump(model_metadata, os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl"))
 
                 except Exception as e:
                     logging.error(f"SMOTE or training error for {symbol}: {str(e)}")

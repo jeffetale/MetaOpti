@@ -4,9 +4,10 @@ import tensorflow as tf
 import joblib
 import logging
 from typing import Tuple, Optional
-from config import mt5
+from config import mt5, MODEL_SAVE_DIR
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_prediction_data
+import os
 
 
 class MLPredictor:
@@ -28,16 +29,16 @@ class MLPredictor:
         """Load pre-trained models for a specific symbol"""
         try:
             # Load metadata first to get feature names
-            metadata = joblib.load(f"ml_models/{self.symbol}_metadata.pkl")
+            metadata = joblib.load(os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_metadata.pkl"))
             self.features = metadata.get("features", [])
 
             self.direction_model = tf.keras.models.load_model(
-                f"ml_models/{self.symbol}_direction_model.keras"
+                os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_direction_model.keras")
             )
             self.return_model = tf.keras.models.load_model(
-                f"ml_models/{self.symbol}_return_model.keras"
+                os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_return_model.keras")
             )
-            self.scaler = joblib.load(f"ml_models/{self.symbol}_scaler.pkl")
+            self.scaler = joblib.load(os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_scaler.pkl"))
 
             logging.info(f"Models loaded for {self.symbol}")
         except FileNotFoundError:
