@@ -481,7 +481,7 @@ def symbol_trader(symbol, trading_stats=None):
                                     f"{symbol} restricted due to consecutive losses"
                                 )
 
-            time.sleep(0.05)  # Check every 50ms
+            time.sleep(0.75)  # Check every 750ms
 
         except Exception as e:
             if not SHUTDOWN_EVENT.is_set():
