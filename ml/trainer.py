@@ -70,7 +70,7 @@ class MLTrainer:
             beta_1=hp['beta_1'],
             beta_2=hp['beta_2']
         )
-        
+
         if model_type == "direction":
             model = Sequential([
                 Dense(hp['hidden_units'], 
@@ -87,7 +87,7 @@ class MLTrainer:
                 Dense(16, activation="relu"),
                 Dense(1, activation="sigmoid")
             ])
-            
+
             model.compile(
                 optimizer=optimizer,
                 loss="binary_crossentropy",
@@ -109,36 +109,40 @@ class MLTrainer:
                 Dense(16, activation="relu"),
                 Dense(1)
             ])
-            
+
             model.compile(
                 optimizer=optimizer,
                 loss="mean_squared_error",
                 metrics=["mae"]
             )
-        
+
         return model
 
     def perform_hyperparameter_optimization(self, X_train_scaled, y_train, model_type):
         """
         Perform hyperparameter optimization with proper model wrapping
         """
-        # Fixed model architecture parameters
-        model_params = {
-            'hidden_units': 64,
-            'dropout_rate': 0.3,
-            'activation': 'relu',
-            'l2_reg': 0.001,
-            'learning_rate': 0.001,
-            'beta_1': 0.9,
-            'beta_2': 0.999
-        }
+        def create_model(hidden_units, dropout_rate, activation, l2_reg, learning_rate, beta_1, beta_2):
+            hp = {
+                'hidden_units': hidden_units,
+                'dropout_rate': dropout_rate,
+                'activation': activation,
+                'l2_reg': l2_reg,
+                'learning_rate': learning_rate,
+                'beta_1': beta_1,
+                'beta_2': beta_2
+            }
+            return self.create_model_with_hp(model_type, X_train_scaled.shape[1], hp)
 
-        # Create base model with fixed architecture
-        def create_model():
-            return self.create_model_with_hp(model_type, X_train_scaled.shape[1], model_params)
-
-        # Define only the training parameters for optimization
+        # Define the parameter grid
         param_grid = {
+            'hidden_units': [32, 64],
+            'dropout_rate': [0.2, 0.3],
+            'activation': ['relu'],
+            'l2_reg': [0.001],
+            'learning_rate': [0.001, 0.01],
+            'beta_1': [0.9],
+            'beta_2': [0.999],
             'batch_size': [32, 64],
             'epochs': [30, 50]
         }
@@ -170,32 +174,41 @@ class MLTrainer:
                 return_train_score=True,
                 random_state=42
             )
-            
+
             search_start_time = time.time()
             random_search_result = random_search.fit(X_train_scaled, y_train)
             search_time = time.time() - search_start_time
 
             self.logger.info(f"\nHyperparameter optimization completed in {search_time:.2f} seconds")
-            self.logger.info(f"Best training parameters: {random_search_result.best_params_}")
-            self.logger.info(f"Best score: {random_search_result.best_score_:.4f}")
+            self.logger.info(f"Best {model_type} model parameters: {random_search_result.best_params_}")
+            self.logger.info(f"Best {model_type} model score: {random_search_result.best_score_:.4f}")
 
-            # Create and train final model with best parameters
-            final_model = create_model()
-            history = final_model.fit(
+            # Return the best model and parameters
+            best_params = random_search_result.best_params_
+            best_model = create_model(
+                hidden_units=best_params['hidden_units'],
+                dropout_rate=best_params['dropout_rate'],
+                activation=best_params['activation'],
+                l2_reg=best_params['l2_reg'],
+                learning_rate=best_params['learning_rate'],
+                beta_1=best_params['beta_1'],
+                beta_2=best_params['beta_2']
+            )
+
+            # Train the best model with the best parameters
+            history = best_model.fit(
                 X_train_scaled,
                 y_train,
-                batch_size=random_search_result.best_params_['batch_size'],
-                epochs=random_search_result.best_params_['epochs'],
+                batch_size=best_params['batch_size'],
+                epochs=best_params['epochs'],
                 verbose=0
             )
-            
-            # Combine fixed and optimized parameters for return
-            best_params = {**model_params, **random_search_result.best_params_}
-            return final_model, best_params
+
+            return best_model, best_params
 
         except Exception as e:
             self.logger.error(f"Error during hyperparameter optimization: {str(e)}")
-            # Create and train model with default parameters
+            # Create model with default parameters
             default_params = {
                 'hidden_units': 64,
                 'dropout_rate': 0.3,
@@ -203,20 +216,28 @@ class MLTrainer:
                 'l2_reg': 0.001,
                 'learning_rate': 0.001,
                 'beta_1': 0.9,
-                'beta_2': 0.999,
-                'batch_size': 32,
-                'epochs': 50
+                'beta_2': 0.999
             }
-            
-            default_model = create_model()
+
+            default_model = create_model(
+                hidden_units=default_params['hidden_units'],
+                dropout_rate=default_params['dropout_rate'],
+                activation=default_params['activation'],
+                l2_reg=default_params['l2_reg'],
+                learning_rate=default_params['learning_rate'],
+                beta_1=default_params['beta_1'],
+                beta_2=default_params['beta_2']
+            )
+
+            # Train the default model
             history = default_model.fit(
                 X_train_scaled,
                 y_train,
-                batch_size=default_params['batch_size'],
-                epochs=default_params['epochs'],
+                batch_size=32,
+                epochs=50,
                 verbose=0
             )
-            
+
             return default_model, default_params
 
     def train_models(self):
@@ -376,7 +397,11 @@ class MLTrainer:
                     )
 
                     training_time = time.time() - symbol_start_time
-                    self.training_stats["training_times"][symbol] = training_time
+                    self.training_stats["training_times"][symbol] = {
+                        "time": training_time,
+                        "accuracy": dir_accuracy,
+                        "mae": ret_mae
+                    }
                     self.training_stats["trained_symbols"] += 1
 
                     self.logger.info(
@@ -421,29 +446,31 @@ class MLTrainer:
         }
 
         if self.training_stats["training_times"]:
-            avg_time = sum(self.training_stats["training_times"].values()) / len(
-                self.training_stats["training_times"]
-            )
+            avg_time = sum(
+                stats["time"]
+                for stats in self.training_stats["training_times"].values()
+            ) / len(self.training_stats["training_times"])
             summary_stats["⏱️ Timing"]["Avg Time/Symbol"] = f"{avg_time:.2f} seconds"
 
             self.logger.info(
                 "\n".join(
-                    f"{category}\n" + "\n".join(f"    {k}: {v}" for k, v in stats.items())
+                    f"{category}\n"
+                    + "\n".join(f"    {k}: {v}" for k, v in stats.items())
                     for category, stats in summary_stats.items()
                 )
             )
 
             self.logger.info(f"\n📊 Individual Symbol Times:\n{'-'*30}")
             for symbol, metrics in self.training_stats["training_times"].items():
-                time_taken = metrics["time"]
-                accuracy = metrics["accuracy"]
-                mae = metrics["mae"]
-                self.logger.info(f"🕒 INFO | {symbol}: {time_taken:.2f} seconds | Accuracy: {accuracy:.4f} | MAE: {mae:.4f}")
+                self.logger.info(
+                    f"{symbol}: {metrics['time']:.2f} seconds | Accuracy: {metrics['accuracy']:.4f} | MAE: {metrics['mae']:.4f}"
+                )
         else:
             self.logger.warning("No symbols were successfully trained in this session")
             self.logger.info(
                 "\n".join(
-                    f"{category}\n" + "\n".join(f"    {k}: {v}" for k, v in stats.items())
+                    f"{category}\n"
+                    + "\n".join(f"    {k}: {v}" for k, v in stats.items())
                     for category, stats in summary_stats.items()
                 )
             )

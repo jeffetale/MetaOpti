@@ -31,26 +31,16 @@ class OrderManager:
 
     def _get_valid_filling_mode(self, symbol):
         """Get valid filling mode for symbol based on execution mode"""
-        filling_mode = mt5.symbol_info(symbol).filling_mode
-
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            self.logger.error(f"❌ Cannot get symbol info for {symbol}")
+            return None
+            
+        filling_mode = symbol_info.filling_mode
+        
         self.logger.info(f"🔍 Symbol {symbol} supports filling modes: {filling_mode}")
-
-        execution_mode = mt5.symbol_info(symbol).trade_mode
-        self.logger.debug(f"📊 Execution mode for {symbol}: {execution_mode}")
-
-        if execution_mode == mt5.SYMBOL_TRADE_EXECUTION_MARKET:
-            if filling_mode & mt5.SYMBOL_FILLING_FOK:
-                self.logger.info(f"✳️ Using FOK filling mode for {symbol}")
-                return mt5.ORDER_FILLING_FOK
-            elif filling_mode & mt5.SYMBOL_FILLING_IOC:
-                self.logger.info(f"✳️ Using IOC filling mode for {symbol}")
-                return mt5.ORDER_FILLING_IOC
-            else:
-                self.logger.error(f"❌ No valid filling mode found for {symbol}")
-                return None
-        else:
-            self.logger.info(f"✳️ Using RETURN filling mode for {symbol}")
-            return mt5.ORDER_FILLING_RETURN
+        
+        return mt5.ORDER_FILLING_IOC
 
     def _validate_account_money(self, symbol, volume, direction, tick):
         """Validate if account has enough money for the trade"""
@@ -96,21 +86,51 @@ class OrderManager:
         return True
 
     def _calculate_margin(self, symbol_info, volume, price):
-        """Calculate required margin for trade"""
-        contract_size = symbol_info.trade_contract_size
-        margin_initial = (
-            symbol_info.margin_initial if symbol_info.margin_initial != 0 else 1
-        )
+        """Calculate required margin for trade based on leverage"""
+        try:
+            # Get account leverage
+            account_info = mt5.account_info()
+            if not account_info:
+                self.logger.error("Failed to get account info for leverage calculation")
+                return float("inf")
 
-        margin = price * volume * contract_size * margin_initial
+            leverage = account_info.leverage
+            if leverage == 0:  # Protect against division by zero
+                self.logger.error("Account leverage is 0, using default 100")
+                leverage = 100
 
-        if symbol_info.currency_profit != mt5.account_info().currency:
-            conversion_rate = self._get_conversion_rate(symbol_info.currency_profit)
-            margin *= conversion_rate
-            self.logger.info(f"💱 Applied currency conversion rate: {conversion_rate}")
+            contract_size = symbol_info.trade_contract_size
 
-        self.logger.debug(f"💰 Calculated margin requirement: {margin:.2f}")
-        return margin
+            # Basic margin calculation
+            margin = (price * volume * contract_size) / leverage
+
+            # Apply currency conversion if needed
+            if symbol_info.currency_profit != account_info.currency:
+                conversion_rate = self._get_conversion_rate(symbol_info.currency_profit)
+                margin *= conversion_rate
+                self.logger.info(
+                    f"💱 Applied currency conversion rate: {conversion_rate}"
+                )
+
+            # Log detailed margin calculation
+            self.logger.debug(
+                f"""
+                💰 Margin Calculation Details:
+                💵 Price: {price}
+                📊 Volume: {volume}
+                📈 Contract Size: {contract_size}
+                💪 Leverage: {leverage}
+                💱 Base Margin: {margin:.2f}
+                🏦 Account Currency: {account_info.currency}
+                💰 Symbol Currency: {symbol_info.currency_profit}
+                """
+            )
+
+            return margin
+
+        except Exception as e:
+            self.logger.error(f"Error in margin calculation: {e}")
+            return float("inf")
 
     def _get_conversion_rate(self, currency):
         """Get conversion rate to account currency"""
@@ -197,9 +217,7 @@ class OrderManager:
         )
         return price, sl, tp
 
-    def _create_order_request(
-        self, symbol, direction, volume, price, sl, tp, filling_type
-    ):
+    def _create_order_request(self, symbol, direction, volume, price, sl, tp, filling_type):
         """Create an order request with specified parameters"""
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -209,13 +227,13 @@ class OrderManager:
             "price": price,
             "sl": sl,
             "tp": tp,
-            "deviation": 10,
+            "deviation": 20,  # Increased deviation helps with execution
             "magic": 234000,
             "comment": "python",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,
         }
-
+        
         self.logger.debug(f"📝 Created order request: {request}")
         return request
 
@@ -320,3 +338,94 @@ class OrderManager:
         if trading_stats:
             trading_stats.update_order_stats(symbol, direction, result.volume)
             self.logger.info(f"📊 Updated trading statistics for {symbol}")
+
+    def close_position(self, position):
+        """Close an open trading position with advanced error handling and logging.
+
+        Args:
+            position: MT5 position object to be closed
+
+        Returns:
+            bool: True if position was closed successfully, False otherwise
+        """
+        try:
+            if not mt5.initialize():
+                self.logger.error(
+                    f"❌ MT5 not initialized when trying to close position {position.ticket}"
+                )
+                return False
+
+            # Get current market tick information
+            tick = mt5.symbol_info_tick(position.symbol)
+            if tick is None:
+                self.logger.error(
+                    f"❌ Could not get tick information for {position.symbol}"
+                )
+                return False
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "position": position.ticket,
+                "symbol": position.symbol,
+                "volume": position.volume,
+                "type": (
+                    mt5.ORDER_TYPE_SELL
+                    if position.type == mt5.ORDER_TYPE_BUY
+                    else mt5.ORDER_TYPE_BUY
+                ),
+                "price": (
+                    tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
+                ),
+                "deviation": 50,  # Increased deviation for better fill probability
+                "magic": 234000,
+                "comment": "close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            self.logger.debug(
+                f"""
+                📝 Close position request for {position.ticket}:
+                {request}
+                """
+            )
+
+            # Send order with timeout
+            result = mt5.order_send(request)
+
+            # Error checking
+            if result is None:
+                self.logger.error(
+                    f"❌ Failed to send close order for position {position.ticket}. Returned None."
+                )
+                return False
+
+            # Check return code
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(
+                    f"""
+                    ✅ Successfully closed position:
+                    🎫 Ticket: {position.ticket}
+                    💰 Profit: {position.profit}
+                    📊 Volume: {position.volume}
+                    """
+                )
+                return True
+            else:
+                self.logger.warning(
+                    f"""
+                    ⚠️ Failed to close position {position.ticket}:
+                    Return code: {result.retcode}
+                    Comment: {result.comment}
+                    """
+                )
+                return False
+
+        except Exception as e:
+            self.logger.error(
+                f"""
+                ❌ Exception when closing position {position.ticket}:
+                Error: {str(e)}
+                """
+            )
+            return False

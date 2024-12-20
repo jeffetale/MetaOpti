@@ -84,3 +84,5 @@ class PositionManager:
 
         df = pd.DataFrame(rates)
         return df["high"].max() - df["low"].min()
+
+    
