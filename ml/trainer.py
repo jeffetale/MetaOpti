@@ -26,7 +26,7 @@ from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
 
 class MLTrainer:
-    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M1, look_back=1000):
+    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M5, look_back=1000):
         self.logger = logging.getLogger(__name__)
         self.symbols = symbols
         self.timeframe = timeframe

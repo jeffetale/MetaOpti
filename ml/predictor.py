@@ -56,7 +56,7 @@ class MLPredictor:
         return self.return_model(scaled_features)
 
     def predict(
-        self, timeframe=mt5.TIMEFRAME_M1, look_back=100, threshold=0.6
+        self, timeframe=mt5.TIMEFRAME_M1, look_back=75, threshold=0.6
     ) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
         if not all(

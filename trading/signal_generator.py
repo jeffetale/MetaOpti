@@ -151,40 +151,37 @@ class SignalGenerator:
         ml_predicted_return,
         tech_signal,
     ):
-        """Combine ML and technical signals for final trading decision"""
+        """Combine ML and technical signals for final trading decision with balanced buy/sell handling"""
         # Basic signal strength scores
         ml_strength = 0
         tech_strength = 0
 
-        # Calculate ML signal strength
-        if ml_signal and ml_confidence >= 0.6:
-            ml_strength = ml_confidence * 2  # Scale up to 0-2 range
-            if (
-                ml_predicted_return > 0.001
-            ):  # Additional boost for higher predicted returns
-                ml_strength *= 1.2
+        # Calculate ML signal strength with balanced thresholds
+        if ml_signal:
+            # For sell signals, transform confidence to be relative to 0.5
+            # e.g., a sell confidence of 0.2 becomes 0.8 (1 - 0.2)
+            adjusted_confidence = ml_confidence if ml_signal == "buy" else (1 - ml_confidence)
+            
+            if adjusted_confidence >= 0.6:
+                ml_strength = adjusted_confidence * 2  # Scale up to 0-2 range
+                if abs(ml_predicted_return) > 0.001:  # absolute value for return
+                    ml_strength *= 1.2
 
         # Calculate technical signal strength
         if tech_signal:
             # RSI extremes increase technical strength
             rsi = current_state["RSI"]
-            if (tech_signal == "buy" and rsi < 25) or (
-                tech_signal == "sell" and rsi > 75
-            ):
+            if (tech_signal == "buy" and rsi < 25) or (tech_signal == "sell" and rsi > 75):
                 tech_strength += 1
 
             # MACD divergence increases technical strength
             macd = current_state["MACD"]
-            if (tech_signal == "buy" and macd > 0) or (
-                tech_signal == "sell" and macd < 0
-            ):
+            if (tech_signal == "buy" and macd > 0) or (tech_signal == "sell" and macd < 0):
                 tech_strength += 0.5
 
             # Stochastic extremes increase technical strength
             stoch = current_state["Stochastic"]
-            if (tech_signal == "buy" and stoch < 15) or (
-                tech_signal == "sell" and stoch > 85
-            ):
+            if (tech_signal == "buy" and stoch < 15) or (tech_signal == "sell" and stoch > 85):
                 tech_strength += 0.5
 
         # Conservative mode adjustments
@@ -198,16 +195,14 @@ class SignalGenerator:
         if trading_state.is_conservative_mode:
             potential_profit *= 0.8
 
-        # Final signal determination
+        # Final signal determination with balanced thresholds
         if total_strength >= required_strength:
             # Signals must agree or ML confidence must be very high
             if ml_signal == tech_signal or (
-                ml_confidence > 0.57 and ml_predicted_return > 0.002
+                adjusted_confidence > 0.6 and abs(ml_predicted_return) > 0.002
             ):
                 return ml_signal, potential_profit
-            elif (
-                ml_confidence > 0.62
-            ):  # Very high ML confidence can override tech signal
+            elif adjusted_confidence > 0.7:  # Very high ML confidence can override tech signal
                 return ml_signal, potential_profit
 
         return "neutral", 0
@@ -303,10 +298,15 @@ class SignalGenerator:
             return None
 
     def _check_neutral_state(self, symbol, ml_confidence, ml_predicted_return):
-        """Check if symbol should enter neutral state"""
+        """Check if symbol should enter neutral state with balanced thresholds"""
+        # For sell signals, check confidence relative to 0.5
+        adjusted_confidence = ml_confidence
+        if ml_confidence < 0.5:  # sell signal
+            adjusted_confidence = 1 - ml_confidence
+            
         if (
-            ml_confidence <= NEUTRAL_CONFIDENCE_THRESHOLD
-            or abs(ml_predicted_return) < 0.0001
+            adjusted_confidence <= NEUTRAL_CONFIDENCE_THRESHOLD
+            or abs(ml_predicted_return) < 0.0001  # absolute value for return
         ):
             trading_state.symbol_states[symbol].neutral_start_time = datetime.now()
             return True

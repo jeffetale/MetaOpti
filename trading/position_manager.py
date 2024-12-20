@@ -12,6 +12,7 @@ class PositionManager:
         self.order_manager = order_manager
         self.risk_manager = risk_manager
         self.trailing_stops = {}
+        self.initial_stops = {}
 
     def manage_open_positions(self, symbol, trading_state, trading_stats=None):
         """Comprehensive position management with advanced features"""
@@ -22,19 +23,40 @@ class PositionManager:
         state = trading_state.symbol_states[symbol]
 
         for position in positions:
+            position_id = position.ticket
+
+            # Initialize tracking for new positions
+            if position_id not in self.initial_stops:
+                self.initial_stops[position_id] = position.sl
+
             self._check_position_age(position)
             self._manage_position_profit(position, symbol, state, trading_stats)
             self._manage_trailing_stop(position, symbol)
             self._check_reversal_conditions(position, symbol, state, trading_stats)
 
     def _manage_trailing_stop(self, position, symbol):
-        """Manage trailing stop loss for profitable positions"""
+        """Manage trailing stop loss for all positions"""
         try:
             # Get current market price
             tick = mt5.symbol_info_tick(symbol)
             if not tick:
                 self.logger.error(f"Cannot get tick data for {symbol}")
                 return
+
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                self.logger.error(f"Cannot get symbol info for {symbol}")
+                return
+
+            # Get minimum stop level in points
+            min_stop_level = symbol_info.trade_stops_level
+
+            # Convert to price difference
+            point_value = symbol_info.point
+            min_stop_distance = min_stop_level * point_value
+
+            # Add extra buffer to minimum distance (e.g., 20% more)
+            min_stop_distance = min_stop_distance * 1.2
 
             current_price = (
                 tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
@@ -56,58 +78,73 @@ class PositionManager:
                     ),
                 }
 
-            # Check if position is profitable
-            if position.profit > 0:
-                new_sl = None
-                symbol_info = mt5.symbol_info(symbol)
+            new_sl = None
 
-                if not symbol_info:
-                    self.logger.error(f"Cannot get symbol info for {symbol}")
-                    return
+            if position.type == mt5.ORDER_TYPE_BUY:
+                # For buy positions
+                if current_price > self.trailing_stops[position_id]["highest_price"]:
+                    self.trailing_stops[position_id]["highest_price"] = current_price
+                    new_sl = current_price - min_stop_distance
 
-                # Calculate pip value for minimum stop loss movement
-                pip_value = 10**-symbol_info.digits
-                min_stop_distance = pip_value * 10 # 10 pips distance
-
-                if position.type == mt5.ORDER_TYPE_BUY:
-                    # Update highest price if current price is higher
-                    if (
-                        current_price
-                        > self.trailing_stops[position_id]["highest_price"]
-                    ):
-                        self.trailing_stops[position_id][
-                            "highest_price"
-                        ] = current_price
-
-                        # Calculate new stop loss (2 pips below highest price)
-                        new_sl = self.trailing_stops[position_id]["highest_price"] - (
-                            min_stop_distance
-                        )
-
-                        # Only move stop loss up
-                        if position.sl is None or new_sl > position.sl:
+                    # Ensure new stop loss is higher than current one
+                    if position.sl is None or new_sl > position.sl:
+                        # Verify stop loss isn't too close to current price
+                        if (current_price - new_sl) >= min_stop_distance:
                             self._modify_stop_loss(position, new_sl)
+                        else:
+                            self.logger.info(
+                                f"Stop loss too close to current price for {symbol}"
+                            )
 
-                else:  # SELL position
-                    # Update lowest price if current price is lower
-                    if current_price < self.trailing_stops[position_id]["lowest_price"]:
-                        self.trailing_stops[position_id]["lowest_price"] = current_price
+            else:  # SELL position
+                if current_price < self.trailing_stops[position_id]["lowest_price"]:
+                    self.trailing_stops[position_id]["lowest_price"] = current_price
+                    new_sl = current_price + min_stop_distance
 
-                        # Calculate new stop loss (2 pips above lowest price)
-                        new_sl = self.trailing_stops[position_id]["lowest_price"] + (
-                            min_stop_distance
-                        )
-
-                        # Only move stop loss down
-                        if position.sl is None or new_sl < position.sl:
+                    # Ensure new stop loss is lower than current one
+                    if position.sl is None or new_sl < position.sl:
+                        # Verify stop loss isn't too close to current price
+                        if (new_sl - current_price) >= min_stop_distance:
                             self._modify_stop_loss(position, new_sl)
+                        else:
+                            self.logger.info(
+                                f"Stop loss too close to current price for {symbol}"
+                            )
+
+            # Handle positions that haven't moved into profit
+            if position.profit <= 0 and position.sl is None:
+                self._set_initial_stop_loss(position, symbol_info, min_stop_distance)
 
         except Exception as e:
             self.logger.error(f"Error in trailing stop management: {e}")
 
+    def _set_initial_stop_loss(self, position, symbol_info, min_stop_distance):
+        """Set initial stop loss for positions that haven't had one set"""
+        try:
+            current_price = position.price_current
+
+            # Calculate initial stop loss based on position type
+            if position.type == mt5.ORDER_TYPE_BUY:
+                initial_sl = current_price - (
+                    min_stop_distance * 2
+                )  # Double the minimum distance for initial stop
+            else:
+                initial_sl = current_price + (min_stop_distance * 2)
+
+            self._modify_stop_loss(position, initial_sl)
+            self.initial_stops[position.ticket] = initial_sl
+
+        except Exception as e:
+            self.logger.error(f"Error setting initial stop loss: {e}")
+
     def _modify_stop_loss(self, position, new_sl):
         """Modify stop loss level for a position"""
         try:
+            # Round the stop loss to the symbol's digits
+            symbol_info = mt5.symbol_info(position.symbol)
+            if symbol_info:
+                new_sl = round(new_sl, symbol_info.digits)
+
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "symbol": position.symbol,
@@ -125,6 +162,7 @@ class PositionManager:
                     🎫 Ticket: {position.ticket}
                     🛑 New SL: {new_sl}
                     💰 Current Profit: {position.profit}
+                    📊 Current Price: {position.price_current}
                 """
                 )
             else:
@@ -133,6 +171,8 @@ class PositionManager:
                     ⚠️ Failed to modify stop loss:
                     🎫 Ticket: {position.ticket}
                     ❌ Error code: {result.retcode if result else 'Unknown'}
+                    🛑 Attempted SL: {new_sl}
+                    📊 Current Price: {position.price_current}
                 """
                 )
 
