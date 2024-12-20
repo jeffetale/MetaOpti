@@ -35,11 +35,11 @@ class OrderManager:
         if not symbol_info:
             self.logger.error(f"❌ Cannot get symbol info for {symbol}")
             return None
-            
+
         filling_mode = symbol_info.filling_mode
-        
+
         self.logger.info(f"🔍 Symbol {symbol} supports filling modes: {filling_mode}")
-        
+
         return mt5.ORDER_FILLING_IOC
 
     def _validate_account_money(self, symbol, volume, direction, tick):
@@ -233,22 +233,110 @@ class OrderManager:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,
         }
-        
+
         self.logger.debug(f"📝 Created order request: {request}")
         return request
+
+    def _calculate_safe_volume(self, symbol, direction, price, available_margin):
+        """Calculate safe trading volume based on available margin and risk parameters"""
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                self.logger.error(f"Cannot get symbol info for {symbol}")
+                return None
+
+            account_info = mt5.account_info()
+            if not account_info:
+                self.logger.error("Cannot get account info")
+                return None
+
+            # Get symbol trading parameters
+            contract_size = symbol_info.trade_contract_size
+            margin_rate = 1 / account_info.leverage
+            min_volume = symbol_info.volume_min
+            max_volume = symbol_info.volume_max
+            volume_step = symbol_info.volume_step
+
+            # Calculate maximum possible volume based on available margin
+            # Use 90% of available margin for safety
+            max_margin_volume = (available_margin * 0.9) / (
+                price * contract_size * margin_rate
+            )
+
+            # Calculate volume based on equity (risk management)
+            equity_based_volume = (account_info.equity * 0.02) / (price * contract_size)
+
+            # Take the more conservative volume
+            calculated_volume = min(max_margin_volume, equity_based_volume)
+
+            # Ensure volume is within symbol's limits
+            calculated_volume = min(calculated_volume, max_volume)
+            calculated_volume = max(calculated_volume, min_volume)
+
+            # Round to the nearest volume step
+            steps = round(calculated_volume / volume_step)
+            safe_volume = steps * volume_step
+
+            # Final validation against symbol limits
+            if safe_volume < min_volume:
+                safe_volume = min_volume
+            elif safe_volume > max_volume:
+                safe_volume = max_volume
+
+            self.logger.info(
+                f"""
+                💭 Volume Calculation for {symbol}:
+                💰 Available Margin: {available_margin}
+                📊 Initial Calculated Volume: {calculated_volume}
+                🔒 Final Safe Volume: {safe_volume}
+                📏 Volume Constraints:
+                    Min: {min_volume}
+                    Max: {max_volume}
+                    Step: {volume_step}
+                📈 Contract Size: {contract_size}
+                💱 Margin Rate: {margin_rate}
+            """
+            )
+
+            return safe_volume
+
+        except Exception as e:
+            self.logger.error(f"Error calculating safe volume: {e}")
+            return None
+
+    def _validate_volume(self, volume, symbol_info):
+        """Validate if volume meets symbol requirements"""
+        if volume < symbol_info.volume_min:
+            self.logger.error(f"Volume {volume} below minimum {symbol_info.volume_min}")
+            return False
+
+        if volume > symbol_info.volume_max:
+            self.logger.error(f"Volume {volume} above maximum {symbol_info.volume_max}")
+            return False
+
+        # Check if volume is multiple of step
+        steps = round(volume / symbol_info.volume_step)
+        adjusted_volume = steps * symbol_info.volume_step
+        if abs(adjusted_volume - volume) > 1e-8:  # Float comparison with tolerance
+            self.logger.error(
+                f"Volume {volume} not multiple of step {symbol_info.volume_step}"
+            )
+            return False
+
+        return True
 
     def place_order(
         self, symbol, direction, atr, volume, trading_stats=None, is_ml_signal=False
     ):
-        """Enhanced order placement with proper filling mode and money validation"""
+        """Enhanced order placement with proper volume calculation and validation"""
         self.logger.info(
             f"""
             🎯 Starting order placement:
             Symbol: {symbol}
             Direction: {direction}
-            Volume: {volume}
+            Initial Volume: {volume}
             ML Signal: {is_ml_signal}
-            """
+        """
         )
 
         symbol_info = mt5.symbol_info(symbol)
@@ -259,14 +347,29 @@ class OrderManager:
         if not self._validate_tick_info(tick, symbol):
             return False
 
-        # Validate account has enough money before adjusting volume
-        if not self._validate_account_money(symbol, volume, direction, tick):
+        # Get account info for margin calculation
+        account_info = mt5.account_info()
+        if not account_info:
+            self.logger.error("Failed to get account info")
             return False
 
-        # Adjust volume based on symbol limits
-        volume = self._adjust_volume(volume, symbol_info)
+        # Calculate safe volume
+        safe_volume = self._calculate_safe_volume(
+            symbol,
+            direction,
+            tick.ask if direction == "buy" else tick.bid,
+            account_info.margin_free,
+        )
 
-        # Get valid filling mode for this symbol
+        if safe_volume is None:
+            return False
+
+        # Validate final volume
+        if not self._validate_volume(safe_volume, symbol_info):
+            self.logger.error(f"Invalid final volume {safe_volume} for {symbol}")
+            return False
+
+        # Get valid filling mode
         filling_mode = self._get_valid_filling_mode(symbol)
         if not filling_mode:
             return False
@@ -274,31 +377,24 @@ class OrderManager:
         # Calculate order parameters
         price, sl, tp = self._calculate_order_parameters(direction, tick, atr)
 
-        # Create and send order with proper filling mode
+        # Create and send order
         request = self._create_order_request(
-            symbol, direction, volume, price, sl, tp, filling_mode
-        )
-
-        # Log order request details
-        self.logger.info(
-            f"""
-            📋 Order Details:
-            🏷️ Symbol: {symbol}
-            📈 Direction: {direction}
-            📊 Volume: {volume}
-            💰 Price: {price}
-            🛑 SL: {sl}
-            🎯 TP: {tp}
-            ⚙️ Filling Mode: {filling_mode}
-            """
+            symbol, direction, safe_volume, price, sl, tp, filling_mode
         )
 
         result = self._send_order(request)
 
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            self._log_successful_order(symbol, direction, volume, price, sl, tp)
+            self._log_successful_order(symbol, direction, safe_volume, price, sl, tp)
+
             if trading_stats:
-                self._update_trading_stats(trading_stats, symbol, direction, result)
+                trading_stats.log_trade(
+                    symbol=symbol,
+                    direction=direction,
+                    profit=0,  # Initial profit is 0
+                    is_ml_signal=is_ml_signal,
+                )
+
             return True
 
         return False
