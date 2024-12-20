@@ -23,6 +23,12 @@ class BackgroundTrainer:
         self.logger = logging.getLogger(__name__)
         self.is_running = False
         self.training_thread = None
+        self.cumulative_stats = {
+            "total_training_sessions": 0,
+            "total_data_points": 0,
+            "total_data_size_mb": 0,
+            "data_by_session": [],
+        }
 
         self.logger.info(
             f"""🎯 Initialized BackgroundTrainer:
@@ -168,7 +174,7 @@ class BackgroundTrainer:
                 {'='*50}
                 """
             )
-            
+
             if not initialize_mt5():
                 self.logger.warning("⚠️ Failed to initialize MT5, skipping training")
                 return
@@ -186,16 +192,54 @@ class BackgroundTrainer:
             self.logger.error(f"💥 Error in training job: {str(e)}", exc_info=True)
 
     def _execute_training(self):
-        """Execute the actual training process"""
+        """Execute the actual training process and track data size"""
         try:
-            self.trainer.train_models()
+            training_stats = self.trainer.train_models()
 
-            # Update metadata with new training time
+            # Update cumulative statistics
+            self.cumulative_stats["total_training_sessions"] += 1
+            self.cumulative_stats["total_data_points"] += training_stats[
+                "total_data_points"
+            ]
+            self.cumulative_stats["total_data_size_mb"] += training_stats[
+                "total_data_size_mb"
+            ]
+            self.cumulative_stats["data_by_session"].append(
+                {
+                    "timestamp": datetime.now(),
+                    "data_points": training_stats["total_data_points"],
+                    "data_size_mb": training_stats["total_data_size_mb"],
+                }
+            )
+
+            # Log cumulative statistics
+            self.logger.info(
+                f"""
+            {'='*50}
+            📊 CUMULATIVE TRAINING STATISTICS
+            {'='*50}
+            🔄 Total Training Sessions: {self.cumulative_stats['total_training_sessions']}
+            📥 Total Data Points Processed: {self.cumulative_stats['total_data_points']:,}
+            💾 Total Data Size Processed: {self.cumulative_stats['total_data_size_mb']:.2f} MB
+            📈 Average Data per Session: 
+                Points: {self.cumulative_stats['total_data_points'] / self.cumulative_stats['total_training_sessions']:,.0f}
+                Size: {self.cumulative_stats['total_data_size_mb'] / self.cumulative_stats['total_training_sessions']:.2f} MB
+            {'='*50}
+            """
+            )
+
+            # Update metadata with new training time and data size
             for symbol in self.symbols:
                 metadata_path = os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl")
                 try:
                     metadata = joblib.load(metadata_path)
                     metadata["training_time"] = datetime.now()
+                    metadata["data_points"] = training_stats[
+                        "data_points_by_symbol"
+                    ].get(symbol, 0)
+                    metadata["data_size_mb"] = training_stats[
+                        "data_size_by_symbol_mb"
+                    ].get(symbol, 0)
                     joblib.dump(metadata, metadata_path)
                 except Exception as e:
                     self.logger.error(f"Error updating metadata for {symbol}: {str(e)}")

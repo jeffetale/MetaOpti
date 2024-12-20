@@ -40,6 +40,10 @@ class MLTrainer:
             "start_time": None,
             "end_time": None,
             "training_times": {},
+            "total_data_points": 0,
+            "total_data_size_mb": 0,
+            "data_points_by_symbol": {},
+            "data_size_by_symbol_mb": {}
         }
 
         self.logger.info(
@@ -57,7 +61,23 @@ class MLTrainer:
             self.logger.warning(f"⚠️ No historical data retrieved for {symbol}")
             return None, None, None
 
-        self.logger.info(f"📊 Retrieved {len(df)} data points for {symbol}")
+        data_size_mb = df.memory_usage(deep=True).sum() / (
+            1024 * 1024
+        )  # Convert bytes to MB
+
+        # Track data points and size for this symbol
+        data_points = len(df)
+        self.training_stats["total_data_points"] += data_points
+        self.training_stats["total_data_size_mb"] += data_size_mb
+        self.training_stats["data_points_by_symbol"][symbol] = data_points
+        self.training_stats["data_size_by_symbol_mb"][symbol] = data_size_mb
+
+        self.logger.info(
+            f"""📊 Retrieved data for {symbol}:
+            Rows: {data_points:,}
+            Size: {data_size_mb:.2f} MB"""
+        )
+
         return prepare_training_data(df)
 
     def create_model_with_hp(self, model_type, input_shape, hp):
@@ -252,6 +272,11 @@ class MLTrainer:
             """
         )
 
+        self.training_stats["total_data_points"] = 0
+        self.training_stats["total_data_size_mb"] = 0
+        self.training_stats["data_points_by_symbol"] = {}
+        self.training_stats["data_size_by_symbol_mb"] = {}
+
         for symbol in self.symbols:
             symbol_start_time = time.time()
             self.logger.info(f"\n{'='*50}")
@@ -382,7 +407,6 @@ class MLTrainer:
                         "training_duration_seconds": time.time() - symbol_start_time,
                     }
 
-                
                     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 
                     try:
@@ -457,6 +481,8 @@ class MLTrainer:
                 "⭐ Successfully Trained": self.training_stats["trained_symbols"],
                 "❌ Failed": self.training_stats["failed_symbols"],
                 "⏭️ Skipped": self.training_stats["skipped_symbols"],
+                "📥 Total Data Points": f"{self.training_stats['total_data_points']:,}",
+                "💾 Total Data Size": f"{self.training_stats['total_data_size_mb']:.2f} MB",
             },
             "⏱️ Timing": {"Total Time": f"{total_time:.2f} seconds"},
         }
@@ -476,10 +502,18 @@ class MLTrainer:
                 )
             )
 
-            self.logger.info(f"\n📊 Individual Symbol Times:\n{'-'*30}")
+            self.logger.info(f"\n📊 Individual Symbol Performance:\n{'-'*30}")
             for symbol, metrics in self.training_stats["training_times"].items():
+                data_points = self.training_stats["data_points_by_symbol"].get(
+                    symbol, 0
+                )
+                data_size = self.training_stats["data_size_by_symbol_mb"].get(symbol, 0)
                 self.logger.info(
-                    f"{symbol}: {metrics['time']:.2f} seconds | Accuracy: {metrics['accuracy']:.4f} | MAE: {metrics['mae']:.4f}"
+                    f"""{symbol}:
+                    Time: {metrics['time']:.2f} seconds
+                    Data: {data_points:,} rows ({data_size:.2f} MB)
+                    Accuracy: {metrics['accuracy']:.4f}
+                    MAE: {metrics['mae']:.4f}"""
                 )
         else:
             self.logger.warning("No symbols were successfully trained in this session")

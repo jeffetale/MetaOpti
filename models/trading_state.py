@@ -9,7 +9,6 @@ from config import (
     NEUTRAL_HOLD_DURATION,
 )
 
-
 class SymbolState:
     def __init__(self):
         self.trades_history = []
