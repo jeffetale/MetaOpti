@@ -28,6 +28,103 @@ class PositionManager:
             self._manage_position_profit(position, symbol, state, trading_stats)
             self._manage_trailing_stop(position, symbol)
             self._check_reversal_conditions(position, symbol, state, trading_stats)
+            self._scale_profitable_position(position, symbol)
+
+    def _scale_profitable_position(self, position, symbol):
+        """Scale up position size if it's in profit"""
+        try:
+            # Only scale if position is in profit
+            if position.profit <= 0:
+                return False
+
+            # Get current profit percentage
+            profit_percent = (position.profit / (position.price_open * position.volume)) * 100
+
+            # Get current market price
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                self.logger.error(f"Cannot get tick data for {symbol}")
+                return False
+
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                self.logger.error(f"Cannot get symbol info for {symbol}")
+                return False
+
+            # Define scaling thresholds and corresponding volume increases
+            scaling_rules = [
+                {"profit_threshold": 0.3, "volume_increase": 0.5},   # 0.3% profit -> 50% volume increase
+                {"profit_threshold": 0.7, "volume_increase": 1.0},   # 0.7% profit -> 100% volume increase
+                {"profit_threshold": 1.5, "volume_increase": 1.5},   # 1.5% profit -> 150% volume increase
+            ]
+
+            # Find applicable scaling rule
+            applicable_rule = None
+            for rule in scaling_rules:
+                if profit_percent >= rule["profit_threshold"]:
+                    applicable_rule = rule
+
+            if not applicable_rule:
+                return False
+
+            # Calculate new volume
+            volume_increase = position.volume * applicable_rule["volume_increase"]
+            new_volume = position.volume + volume_increase
+
+            # Ensure new volume doesn't exceed symbol limits
+            new_volume = min(new_volume, symbol_info.volume_max)
+            new_volume = max(new_volume, symbol_info.volume_min)
+
+            # Round to symbol volume step
+            volume_step = symbol_info.volume_step
+            new_volume = round(new_volume / volume_step) * volume_step
+
+            # If new volume is not significantly different, skip scaling
+            if abs(new_volume - position.volume) < symbol_info.volume_step:
+                return False
+
+            # Create scaling request
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "type": mt5.ORDER_TYPE_BUY if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_SELL,
+                "volume": volume_increase,  # Only add the increase amount
+                "price": tick.ask if position.type == mt5.ORDER_TYPE_BUY else tick.bid,
+                "deviation": 20,
+                "magic": 234000,
+                "comment": "scale_up",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            # Send scaling order
+            result = mt5.order_send(request)
+
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(
+                    f"""
+                    ✅ Successfully scaled position:
+                    🎫 Original Position: {position.ticket}
+                    📈 Original Volume: {position.volume}
+                    📊 New Volume Addition: {volume_increase}
+                    💰 Current Profit: {position.profit}
+                    📋 Profit Percentage: {profit_percent:.2f}%
+                    """
+                )
+                return True
+            else:
+                self.logger.warning(
+                    f"""
+                    ⚠️ Failed to scale position:
+                    🎫 Ticket: {position.ticket}
+                    ❌ Error code: {result.retcode if result else 'Unknown'}
+                    """
+                )
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error scaling position: {e}")
+            return False
 
     def _manage_trailing_stop(self, position, symbol):
         """Manage trailing stop loss for profitable positions"""

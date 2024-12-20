@@ -436,14 +436,7 @@ class OrderManager:
             self.logger.info(f"📊 Updated trading statistics for {symbol}")
 
     def close_position(self, position):
-        """Close an open trading position with advanced error handling and logging.
-
-        Args:
-            position: MT5 position object to be closed
-
-        Returns:
-            bool: True if position was closed successfully, False otherwise
-        """
+        """Close an open trading position with advanced error handling and logging."""
         try:
             if not mt5.initialize():
                 self.logger.error(
