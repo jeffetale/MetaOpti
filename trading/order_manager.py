@@ -264,10 +264,10 @@ class OrderManager:
             )
 
             # Calculate volume based on equity (risk management)
-            equity_based_volume = (account_info.equity * 0.2) / (price * contract_size)
+            equity_based_volume = (account_info.equity * 0.9) / (price * contract_size)
 
-            # Take the more conservative volume
-            calculated_volume = min(max_margin_volume, equity_based_volume)
+            # Choose volume type (max/min)
+            calculated_volume = max(max_margin_volume, equity_based_volume)
 
             # Ensure volume is within symbol's limits
             calculated_volume = min(calculated_volume, max_volume)
