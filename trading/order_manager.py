@@ -227,7 +227,7 @@ class OrderManager:
             "price": price,
             "sl": sl,
             "tp": tp,
-            "deviation": 20,  # Increased deviation helps with execution
+            "deviation": 20, 
             "magic": 234000,
             "comment": "python",
             "type_time": mt5.ORDER_TIME_GTC,
@@ -264,7 +264,7 @@ class OrderManager:
             )
 
             # Calculate volume based on equity (risk management)
-            equity_based_volume = (account_info.equity * 0.02) / (price * contract_size)
+            equity_based_volume = (account_info.equity * 0.2) / (price * contract_size)
 
             # Take the more conservative volume
             calculated_volume = min(max_margin_volume, equity_based_volume)

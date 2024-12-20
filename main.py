@@ -88,7 +88,7 @@ class TradingBot:
                             else:
                                 self._handle_failed_trade(state, symbol)
 
-                time.sleep(0.75)
+                time.sleep(5)  #loop every 5 seconds
 
             except Exception as e:
                 if not SHUTDOWN_EVENT.is_set():
