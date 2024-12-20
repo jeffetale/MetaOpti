@@ -375,14 +375,30 @@ class MLTrainer:
                         "return_model_params": best_return_params,
                         "direction_model_performance": {
                             "accuracy": dir_accuracy,
-                            "loss": dir_loss
+                            "loss": dir_loss,
                         },
-                        "return_model_performance": {
-                            "mae": ret_mae,
-                            "loss": ret_loss
-                        }
+                        "return_model_performance": {"mae": ret_mae, "loss": ret_loss},
+                        "training_timestamp": datetime.now().isoformat(),  # Add training completion timestamp
+                        "training_duration_seconds": time.time() - symbol_start_time,
                     }
-                    joblib.dump(model_metadata, os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl"))
+
+                
+                    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+                    try:
+                        joblib.dump(
+                            model_metadata,
+                            os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl"),
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error saving metadata for {symbol}: {str(e)}"
+                        )
+                        raise  
+
+                    self.logger.info(
+                        f"✅ Saved metadata for {symbol} with training timestamp"
+                    )
 
                     self.logger.info(
                         f"""✨ {symbol} Direction Model Results:

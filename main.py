@@ -21,6 +21,8 @@ from trading.position_manager import PositionManager
 from trading.signal_generator import SignalGenerator
 from trading.risk_manager import RiskManager
 from ml.predictor import MLPredictor
+from ml.background_train import BackgroundTrainer
+from utils.market_utils import ensure_mt5_initialized
 
 setup_comprehensive_logging()
 
@@ -272,12 +274,38 @@ def signal_handler():
 
 def main():
     """Main entry point for the trading bot"""
-    bot = TradingBot()
+    try:
+        # First ensure MT5 is properly initialized
+        if not ensure_mt5_initialized():
+            logging.error("Cannot start bot - MT5 initialization failed")
+            return
 
-    if bot.initialize():
-        bot.start_trading()
-        bot.monitor_trading()
+        # Initialize background trainer
+        background_trainer = BackgroundTrainer(SYMBOLS)
 
+        # Validate and potentially train initial models
+        if not background_trainer.initialize():
+            logging.error("Failed to initialize models - cannot start bot")
+            return
+
+        # Initialize the trading bot
+        bot = TradingBot()
+
+        # Start background training
+        background_trainer.start()
+
+        # Start the bot if initialization is successful
+        if bot.initialize():
+            bot.start_trading()
+            bot.monitor_trading()
+
+        # Clean shutdown
+        background_trainer.stop()
+
+    except Exception as e:
+        logging.error(f"Error in main: {str(e)}", exc_info=True)
+        if 'background_trainer' in locals():
+            background_trainer.stop()
 
 if __name__ == "__main__":
     main()
