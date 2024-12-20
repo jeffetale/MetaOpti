@@ -181,7 +181,7 @@ class PositionManager:
                         symbol,
                         reversal_direction,
                         atr,
-                        state.volume * 1.5,
+                        state.volume * 0.75,  # Reduce volume for reversal
                         trading_stats,
                     )
 

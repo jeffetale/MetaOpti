@@ -85,10 +85,15 @@ class RiskManager:
 
     def _adjust_volume(self, state):
         """Adjust trading volume based on performance"""
+        if state.consecutive_losses > 0:
+            # Reduce volume after each loss
+            state.volume = max(state.volume * 0.5, INITIAL_VOLUME * 0.25)
+            return
+            
         if state.win_rate > 0.6:
-            state.volume = min(state.volume * 1.2, INITIAL_VOLUME * 2)
+            state.volume = min(state.volume * 1.1, INITIAL_VOLUME * 1.5)  # More conservative increase
         elif state.win_rate < 0.4:
-            state.volume = max(state.volume * 0.8, INITIAL_VOLUME * 0.5)
+            state.volume = max(state.volume * 0.7, INITIAL_VOLUME * 0.25)  # Steeper decrease
 
     def _adjust_profit_threshold(self, state, profit):
         """Adjust profit threshold based on recent performance"""
