@@ -1,4 +1,5 @@
 # trading/position_manager.py
+
 import logging
 from datetime import datetime
 from config import POSITION_REVERSAL_THRESHOLD, mt5
@@ -26,183 +27,152 @@ class PositionManager:
         for position in positions:
             self._check_position_age(position)
             self._manage_position_profit(position, symbol, state, trading_stats)
-            self._manage_trailing_stop(position, symbol)
+            self._manage_breakeven_plus(position, symbol)
+            self._enhanced_trailing_stop(position, symbol)
             self._check_reversal_conditions(position, symbol, state, trading_stats)
-            self._scale_profitable_position(position, symbol)
 
-    def _scale_profitable_position(self, position, symbol):
-        """Scale up position size if it's in profit"""
+    def _manage_breakeven_plus(self, position, symbol):
+        """Move stop loss to break-even plus additional pips once in sufficient profit"""
         try:
-            # Only scale if position is in profit
+            # Only proceed if position is in profit
             if position.profit <= 0:
-                return False
-
-            # Get current profit percentage
-            profit_percent = (position.profit / (position.price_open * position.volume)) * 100
-
-            # Get current market price
-            tick = mt5.symbol_info_tick(symbol)
-            if not tick:
-                self.logger.error(f"Cannot get tick data for {symbol}")
-                return False
-
-            symbol_info = mt5.symbol_info(symbol)
-            if not symbol_info:
-                self.logger.error(f"Cannot get symbol info for {symbol}")
-                return False
-
-            # Define scaling thresholds and corresponding volume increases
-            scaling_rules = [
-                {"profit_threshold": 0.3, "volume_increase": 0.5},   # 0.3% profit -> 50% volume increase
-                {"profit_threshold": 0.7, "volume_increase": 1.0},   # 0.7% profit -> 100% volume increase
-                {"profit_threshold": 1.5, "volume_increase": 1.5},   # 1.5% profit -> 150% volume increase
-            ]
-
-            # Find applicable scaling rule
-            applicable_rule = None
-            for rule in scaling_rules:
-                if profit_percent >= rule["profit_threshold"]:
-                    applicable_rule = rule
-
-            if not applicable_rule:
-                return False
-
-            # Calculate new volume
-            volume_increase = position.volume * applicable_rule["volume_increase"]
-            new_volume = position.volume + volume_increase
-
-            # Ensure new volume doesn't exceed symbol limits
-            new_volume = min(new_volume, symbol_info.volume_max)
-            new_volume = max(new_volume, symbol_info.volume_min)
-
-            # Round to symbol volume step
-            volume_step = symbol_info.volume_step
-            new_volume = round(new_volume / volume_step) * volume_step
-
-            # If new volume is not significantly different, skip scaling
-            if abs(new_volume - position.volume) < symbol_info.volume_step:
-                return False
-
-            # Create scaling request
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "type": mt5.ORDER_TYPE_BUY if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_SELL,
-                "volume": volume_increase,  # Only add the increase amount
-                "price": tick.ask if position.type == mt5.ORDER_TYPE_BUY else tick.bid,
-                "deviation": 20,
-                "magic": 234000,
-                "comment": "scale_up",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-
-            # Send scaling order
-            result = mt5.order_send(request)
-
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                self.logger.info(
-                    f"""
-                    ✅ Successfully scaled position:
-                    🎫 Original Position: {position.ticket}
-                    📈 Original Volume: {position.volume}
-                    📊 New Volume Addition: {volume_increase}
-                    💰 Current Profit: {position.profit}
-                    📋 Profit Percentage: {profit_percent:.2f}%
-                    """
-                )
-                return True
-            else:
-                self.logger.warning(
-                    f"""
-                    ⚠️ Failed to scale position:
-                    🎫 Ticket: {position.ticket}
-                    ❌ Error code: {result.retcode if result else 'Unknown'}
-                    """
-                )
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Error scaling position: {e}")
-            return False
-
-    def _manage_trailing_stop(self, position, symbol):
-        """Manage trailing stop loss for profitable positions"""
-        try:
-            # Get current market price
-            tick = mt5.symbol_info_tick(symbol)
-            if not tick:
-                self.logger.error(f"Cannot get tick data for {symbol}")
                 return
 
-            current_price = (
-                tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
-            )
-            position_id = position.ticket
+            # Get symbol info for pip calculations
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                return
 
-            # Initialize trailing stop if not exists
-            if position_id not in self.trailing_stops:
-                self.trailing_stops[position_id] = {
-                    "highest_price": (
-                        position.price_current
-                        if position.type == mt5.ORDER_TYPE_BUY
-                        else float("inf")
-                    ),
-                    "lowest_price": (
-                        position.price_current
-                        if position.type == mt5.ORDER_TYPE_SELL
-                        else float("-inf")
-                    ),
-                }
+            # Calculate point value
+            point = symbol_info.point
+            profit_pips = position.profit / (point * position.volume)
 
-            # Check if position is profitable
-            if position.profit > 0:
-                new_sl = None
-                symbol_info = mt5.symbol_info(symbol)
+            # If profit exceeds threshold (20 pips)
+            if profit_pips >= 20:
+                # Calculate break-even level plus 5 pips
+                breakeven_plus = position.price_open + (
+                    5 * point if position.type == mt5.ORDER_TYPE_BUY else -5 * point
+                )
 
-                if not symbol_info:
-                    self.logger.error(f"Cannot get symbol info for {symbol}")
-                    return
-
-                # Calculate pip value for minimum stop loss movement
-                pip_value = 10**-symbol_info.digits
-                min_stop_distance = pip_value * 5  # 5 pips distance
-
-                if position.type == mt5.ORDER_TYPE_BUY:
-                    # Update highest price if current price is higher
-                    if (
-                        current_price
-                        > self.trailing_stops[position_id]["highest_price"]
-                    ):
-                        self.trailing_stops[position_id][
-                            "highest_price"
-                        ] = current_price
-
-                        # Calculate new stop loss (2 pips below highest price)
-                        new_sl = self.trailing_stops[position_id]["highest_price"] - (
-                            min_stop_distance
-                        )
-
-                        # Only move stop loss up
-                        if position.sl is None or new_sl > position.sl:
-                            self._modify_stop_loss(position, new_sl)
-
-                else:  # SELL position
-                    # Update lowest price if current price is lower
-                    if current_price < self.trailing_stops[position_id]["lowest_price"]:
-                        self.trailing_stops[position_id]["lowest_price"] = current_price
-
-                        # Calculate new stop loss (2 pips above lowest price)
-                        new_sl = self.trailing_stops[position_id]["lowest_price"] + (
-                            min_stop_distance
-                        )
-
-                        # Only move stop loss down
-                        if position.sl is None or new_sl < position.sl:
-                            self._modify_stop_loss(position, new_sl)
+                # Only modify if new stop loss is better than existing
+                if (
+                    position.sl is None
+                    or (
+                        position.type == mt5.ORDER_TYPE_BUY
+                        and breakeven_plus > position.sl
+                    )
+                    or (
+                        position.type == mt5.ORDER_TYPE_SELL
+                        and breakeven_plus < position.sl
+                    )
+                ):
+                    self._modify_stop_loss(position, breakeven_plus)
+                    self.logger.info(
+                        f"""
+                        ✅ Set break-even plus for {position.symbol}:
+                        🎫 Ticket: {position.ticket}
+                        💰 Profit Pips: {profit_pips:.1f}
+                        🛑 New SL: {breakeven_plus}
+                        """
+                    )
 
         except Exception as e:
-            self.logger.error(f"Error in trailing stop management: {e}")
+            self.logger.error(f"Error in break-even plus management: {e}")
+
+    def _enhanced_trailing_stop(self, position, symbol):
+        """Advanced trailing stop with better profit protection"""
+        try:
+            # Get current market price
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                return
+
+            # Calculate ATR properly using true range
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 14)
+            if rates is None:
+                return
+
+            import pandas as pd
+            import numpy as np
+
+            df = pd.DataFrame(rates)
+            df['high_low'] = df['high'] - df['low']
+            df['high_close'] = np.abs(df['high'] - df['close'].shift(1))
+            df['low_close'] = np.abs(df['low'] - df['close'].shift(1))
+            df['tr'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
+            atr = df['tr'].mean()
+
+            current_price = tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
+            position_id = position.ticket
+
+            # Initialize trailing data if not exists
+            if position_id not in self.trailing_stops:
+                self.trailing_stops[position_id] = {
+                    "highest_price": current_price if position.type == mt5.ORDER_TYPE_BUY else float("inf"),
+                    "lowest_price": current_price if position.type == mt5.ORDER_TYPE_SELL else float("-inf"),
+                    "profit_locked": False,
+                    "breakeven_set": False
+                }
+
+            trail_data = self.trailing_stops[position_id]
+            
+            # Calculate profit in pips
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                return
+            
+            point = symbol_info.point
+            profit_pips = position.profit / (point * position.volume)
+
+            # Break-even logic once we have 10 pips profit
+            if not trail_data["breakeven_set"] and profit_pips >= 10:
+                breakeven_level = position.price_open + (2 * point if position.type == mt5.ORDER_TYPE_BUY else -2 * point)
+                self._modify_stop_loss(position, breakeven_level)
+                trail_data["breakeven_set"] = True
+                self.logger.info(f"Set break-even stop for {symbol} position {position_id}")
+                return
+
+            # Enhanced trailing stop logic
+            if position.type == mt5.ORDER_TYPE_BUY:
+                if current_price > trail_data["highest_price"]:
+                    trail_data["highest_price"] = current_price
+                    
+                    # Trail distance gets tighter as profit increases
+                    if profit_pips > 20:
+                        trail_distance = atr * 1.0  # Tighter trail for larger profits
+                    elif profit_pips > 10:
+                        trail_distance = atr * 1.5
+                    else:
+                        trail_distance = atr * 2.0
+
+                    new_sl = current_price - trail_distance
+                    
+                    # Ensure new stop loss is better than current
+                    if not position.sl or new_sl > position.sl:
+                        self._modify_stop_loss(position, new_sl)
+                        self.logger.info(f"Updated trailing stop for {symbol} Buy position {position_id} to {new_sl}")
+
+            else:  # SELL position
+                if current_price < trail_data["lowest_price"]:
+                    trail_data["lowest_price"] = current_price
+                    
+                    # Trail distance gets tighter as profit increases
+                    if profit_pips > 20:
+                        trail_distance = atr * 1.0
+                    elif profit_pips > 10:
+                        trail_distance = atr * 1.5
+                    else:
+                        trail_distance = atr * 2.0
+
+                    new_sl = current_price + trail_distance
+                    
+                    # Ensure new stop loss is better than current
+                    if not position.sl or new_sl < position.sl:
+                        self._modify_stop_loss(position, new_sl)
+                        self.logger.info(f"Updated trailing stop for {symbol} Sell position {position_id} to {new_sl}")
+
+        except Exception as e:
+            self.logger.error(f"Error in enhanced trailing stop management: {e}")
 
     def _modify_stop_loss(self, position, new_sl):
         """Modify stop loss level for a position"""
@@ -278,7 +248,7 @@ class PositionManager:
                         symbol,
                         reversal_direction,
                         atr,
-                        state.volume * 0.75,  # Reduce volume for reversal
+                        state.volume * 1.5,  # Increase volume for reversal
                         trading_stats,
                     )
 

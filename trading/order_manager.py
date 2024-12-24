@@ -258,16 +258,23 @@ class OrderManager:
             volume_step = symbol_info.volume_step
 
             # Calculate maximum possible volume based on available margin
-            # Use 90% of available margin for safety
-            max_margin_volume = (available_margin * 0.9) / (
+            # Using 50% of available margin instead of 90% for more aggressive trading
+            max_margin_volume = (available_margin * 0.5) / (
                 price * contract_size * margin_rate
             )
 
             # Calculate volume based on equity (risk management)
-            equity_based_volume = (account_info.equity * 0.1) / (price * contract_size)
+            # Increased from 0.2 (20%) to 0.4 (40%) of equity
+            equity_based_volume = (account_info.equity * 0.4) / (price * contract_size)
 
-            # Choose volume
-            calculated_volume = min(max_margin_volume, equity_based_volume)
+            # Set minimum target volume (can be adjusted based on your preference)
+            min_target_volume = 0.05 # Minimum target of 0.05 lots
+
+            # Choose volume - take the maximum of our minimum target and calculated volumes
+            calculated_volume = max(
+                min_target_volume,
+                min(max_margin_volume, equity_based_volume)
+            )
 
             # Ensure volume is within symbol's limits
             calculated_volume = min(calculated_volume, max_volume)
