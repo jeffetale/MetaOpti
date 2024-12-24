@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from config import mt5, TRADING_CONFIG
+from config import mt5, TRADING_CONFIG, MT5Config
 
 from logging_config import setup_comprehensive_logging
 
@@ -80,7 +80,7 @@ class PositionManager:
             self.logger.error(f"Error in break-even plus management: {e}")
 
     def _enhanced_trailing_stop(self, position, symbol):
-        """Advanced trailing stop with better profit protection"""
+        """Advanced trailing stop with better profit protection and profit locking"""
         try:
             # Get current market price
             tick = mt5.symbol_info_tick(symbol)
@@ -88,7 +88,7 @@ class PositionManager:
                 return
 
             # Calculate ATR properly using true range
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 14)
+            rates = mt5.copy_rates_from_pos(symbol, MT5Config.TIMEFRAME, 0, 14)
             if rates is None:
                 return
 
@@ -110,6 +110,7 @@ class PositionManager:
                 self.trailing_stops[position_id] = {
                     "highest_price": current_price if position.type == mt5.ORDER_TYPE_BUY else float("inf"),
                     "lowest_price": current_price if position.type == mt5.ORDER_TYPE_SELL else float("-inf"),
+                    "max_profit": 0,
                     "profit_locked": False,
                     "breakeven_set": False
                 }
@@ -123,6 +124,24 @@ class PositionManager:
             
             point = symbol_info.point
             profit_pips = position.profit / (point * position.volume)
+            
+            # Update maximum profit reached
+            current_profit = position.profit
+            trail_data["max_profit"] = max(trail_data["max_profit"], current_profit)
+            
+            # Profit locking logic
+            if current_profit > TRADING_CONFIG.MIN_PROFIT_THRESHOLD and not trail_data["profit_locked"]:
+                profit_lock_level = trail_data["max_profit"] * TRADING_CONFIG.PROFIT_LOCK_PERCENTAGE
+                
+                # If current profit falls below locked percentage of max profit, close position
+                if current_profit < profit_lock_level:
+                    self.logger.info(f"Closing position {position_id} to lock in {TRADING_CONFIG.PROFIT_LOCK_PERCENTAGE*100}% of max profit")
+                    self.order_manager.close_position(position)
+                    return
+                
+                # Mark profit as locked if we've reached a significant profit level
+                if current_profit >= TRADING_CONFIG.MIN_PROFIT_THRESHOLD * 2:
+                    trail_data["profit_locked"] = True
 
             # Break-even logic once we have 10 pips profit
             if not trail_data["breakeven_set"] and profit_pips >= 10:
@@ -139,7 +158,7 @@ class PositionManager:
                     
                     # Trail distance gets tighter as profit increases
                     if profit_pips > 20:
-                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR  # Tighter trail for larger profits
+                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR
                     elif profit_pips > 10:
                         trail_distance = atr * 1.5
                     else:
@@ -259,7 +278,7 @@ class PositionManager:
 
     def _get_market_volatility(self, symbol):
         """Calculate current market volatility"""
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 20)
+        rates = mt5.copy_rates_from_pos(symbol, MT5Config.TIMEFRAME, 0, 20)
         if rates is None:
             return None
 

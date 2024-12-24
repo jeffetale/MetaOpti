@@ -1,13 +1,7 @@
 # models/trading_state.py
 
 from collections import defaultdict
-from config import (
-    INITIAL_VOLUME,
-    MIN_PROFIT_THRESHOLD,
-    MAX_CONSECUTIVE_LOSSES,
-    MIN_WIN_RATE,
-    NEUTRAL_HOLD_DURATION,
-)
+from config import TRADING_CONFIG
 
 class SymbolState:
     def __init__(self):
@@ -18,9 +12,9 @@ class SymbolState:
         self.is_restricted = False
         self.last_trade_time = None
         self.win_rate = 0
-        self.volume = INITIAL_VOLUME
+        self.volume = TRADING_CONFIG.INITIAL_VOLUME
         self.trades_count = 0
-        self.profit_threshold = MIN_PROFIT_THRESHOLD
+        self.profit_threshold = TRADING_CONFIG.MIN_PROFIT_THRESHOLD
         self.recent_trade_directions = []  # Track last few trade directions
         self.trade_direction_memory_size = 5  # Remember last 5 trades
         self.neutral_start_time = None
@@ -41,9 +35,9 @@ class TAParams:
 
 class TradingState:
     # Class-level constants for risk management
-    MAX_CONSECUTIVE_LOSSES = MAX_CONSECUTIVE_LOSSES
-    MIN_WIN_RATE = MIN_WIN_RATE
-    NEUTRAL_HOLD_DURATION = NEUTRAL_HOLD_DURATION
+    MAX_CONSECUTIVE_LOSSES = TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES
+    MIN_WIN_RATE = TRADING_CONFIG.MIN_WIN_RATE
+    NEUTRAL_HOLD_DURATION = TRADING_CONFIG.NEUTRAL_HOLD_DURATION
 
     def __init__(self):
         self.symbol_states = defaultdict(SymbolState)

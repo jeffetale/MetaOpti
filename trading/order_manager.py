@@ -259,13 +259,13 @@ class OrderManager:
 
             # Calculate maximum possible volume based on available margin
             # Using 50% of available margin instead of 90% for more aggressive trading
-            max_margin_volume = (available_margin * 0.5) / (
+            max_margin_volume = (available_margin * TRADING_CONFIG.MARGIN_USAGE_LIMIT) / (
                 price * contract_size * margin_rate
             )
 
             # Calculate volume based on equity (risk management)
             # Increased from 0.2 (20%) to 0.4 (40%) of equity
-            equity_based_volume = (account_info.equity * 0.4) / (price * contract_size)
+            equity_based_volume = (account_info.equity * TRADING_CONFIG.EQUITY_RISK_PER_TRADE) / (price * contract_size)
 
             # Set minimum target volume (can be adjusted based on your preference)
             min_target_volume = 0.05 # Minimum target of 0.05 lots

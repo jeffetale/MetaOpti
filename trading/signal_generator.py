@@ -3,7 +3,7 @@
 import logging
 import pandas as pd
 from datetime import datetime
-from config import TIMEFRAME, mt5, TRADING_CONFIG, MT5Config
+from config import mt5, TRADING_CONFIG, MT5Config
 from models.trading_state import trading_state
 from ml.features.technical_indicators import TechnicalIndicators
 
