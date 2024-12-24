@@ -4,7 +4,7 @@ import tensorflow as tf
 import joblib
 import logging
 from typing import Tuple, Optional
-from config import mt5, MODEL_SAVE_DIR
+from config import mt5, MODEL_SAVE_DIR, TRADING_CONFIG, MT5Config
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_prediction_data
 import os
@@ -56,7 +56,7 @@ class MLPredictor:
         return self.return_model(scaled_features)
 
     def predict(
-        self, timeframe=mt5.TIMEFRAME_M1, look_back=75, threshold=0.6
+        self, timeframe=MT5Config.TIMEFRAME, look_back=TRADING_CONFIG.MODEL_PREDICTION_LOOKBACK_PERIODS, threshold=TRADING_CONFIG.HIGH_CONFIDENCE_THRESHOLD
     ) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
         if not all(

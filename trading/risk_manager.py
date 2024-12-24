@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from config import MIN_PROFIT_THRESHOLD, MIN_WIN_RATE, INITIAL_VOLUME
+from config import TRADING_CONFIG
 from models.trading_state import trading_state
 
 from logging_config import setup_comprehensive_logging
@@ -25,10 +25,10 @@ class RiskManager:
             return False
 
         # Check win rate
-        if state.trades_count > 10 and state.win_rate < MIN_WIN_RATE:
+        if state.trades_count > 10 and state.win_rate < TRADING_CONFIG.MIN_WIN_RATE:
             # Allow trading again after cooling period
             cooling_period = datetime.now() - state.last_trade_time
-            if cooling_period < timedelta(minutes=30):
+            if cooling_period < timedelta(minutes=TRADING_CONFIG.COOLING_PERIOD_SECONDS):
                 return False
 
         # Check recent performance
@@ -41,7 +41,7 @@ class RiskManager:
                     return False
 
         # Check global account risk
-        if trading_state.global_profit < -100:  # $100 maximum drawdown
+        if trading_state.global_profit < -TRADING_CONFIG.MAX_DRAWDOWN:  # $100 maximum drawdown
             return False
 
         return True
@@ -87,21 +87,21 @@ class RiskManager:
         """Adjust trading volume based on performance"""
         if state.consecutive_losses > 0:
             # Reduce volume after each loss
-            state.volume = max(state.volume * 0.5, INITIAL_VOLUME * 0.25)
+            state.volume = max(state.volume * 0.5, TRADING_CONFIG.INITIAL_VOLUME * TRADING_CONFIG.MIN_VOLUME_MULTIPLIER)
             return
             
         if state.win_rate > 0.6:
-            state.volume = min(state.volume * 1.1, INITIAL_VOLUME * 1.5)  # More conservative increase
+            state.volume = min(state.volume * TRADING_CONFIG.VOLUME_STEP_UP, TRADING_CONFIG.INITIAL_VOLUME * 1.5)  # More conservative increase
         elif state.win_rate < 0.4:
-            state.volume = max(state.volume * 0.7, INITIAL_VOLUME * 0.25)  # Steeper decrease
+            state.volume = max(state.volume * TRADING_CONFIG.VOLUME_STEP_DOWN, TRADING_CONFIG.INITIAL_VOLUME * TRADING_CONFIG.MIN_VOLUME_MULTIPLIER)  # Steeper decrease
 
     def _adjust_profit_threshold(self, state, profit):
         """Adjust profit threshold based on recent performance"""
         if profit > state.profit_threshold:
-            state.profit_threshold *= 1.1
+            state.profit_threshold *= TRADING_CONFIG.PROFIT_THRESHOLD_STEP
         elif profit < 0:
             state.profit_threshold = max(
-                MIN_PROFIT_THRESHOLD, state.profit_threshold * 0.9
+                TRADING_CONFIG.MIN_PROFIT_THRESHOLD, state.profit_threshold * 0.9
             )
 
     def calculate_position_size(self, symbol, atr, trading_state):
@@ -111,7 +111,7 @@ class RiskManager:
             0.02 * trading_state.account_balance, 100
         )  # 2% risk or max $100
 
-        if state.win_rate < MIN_WIN_RATE:
+        if state.win_rate < TRADING_CONFIG.MIN_WIN_RATE:
             risk_per_trade *= 0.5
 
         return risk_per_trade / (atr * 5)  # Using 5x ATR for stop loss

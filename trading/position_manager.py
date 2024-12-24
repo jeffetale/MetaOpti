@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from config import POSITION_REVERSAL_THRESHOLD, mt5
+from config import mt5, TRADING_CONFIG
 
 from logging_config import setup_comprehensive_logging
 
@@ -51,7 +51,7 @@ class PositionManager:
             if profit_pips >= 20:
                 # Calculate break-even level plus 5 pips
                 breakeven_plus = position.price_open + (
-                    5 * point if position.type == mt5.ORDER_TYPE_BUY else -5 * point
+                    TRADING_CONFIG.BREAKEVEN_PLUS_PIPS * point if position.type == mt5.ORDER_TYPE_BUY else -TRADING_CONFIG.BREAKEVEN_PLUS_PIPS * point
                 )
 
                 # Only modify if new stop loss is better than existing
@@ -139,11 +139,11 @@ class PositionManager:
                     
                     # Trail distance gets tighter as profit increases
                     if profit_pips > 20:
-                        trail_distance = atr * 1.0  # Tighter trail for larger profits
+                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR  # Tighter trail for larger profits
                     elif profit_pips > 10:
                         trail_distance = atr * 1.5
                     else:
-                        trail_distance = atr * 2.0
+                        trail_distance = atr * TRADING_CONFIG.INITIAL_VOLUME
 
                     new_sl = current_price - trail_distance
                     
@@ -158,11 +158,11 @@ class PositionManager:
                     
                     # Trail distance gets tighter as profit increases
                     if profit_pips > 20:
-                        trail_distance = atr * 1.0
+                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR
                     elif profit_pips > 10:
                         trail_distance = atr * 1.5
                     else:
-                        trail_distance = atr * 2.0
+                        trail_distance = atr * TRADING_CONFIG.INITIAL_VOLUME
 
                     new_sl = current_price + trail_distance
                     
@@ -214,7 +214,7 @@ class PositionManager:
             datetime.now() - datetime.fromtimestamp(position.time)
         ).total_seconds()
 
-        if position_age >= 30 and position.profit < 0:
+        if position_age >= TRADING_CONFIG.MAX_POSITION_AGE_SECONDS and position.profit < 0:
             if self.order_manager.close_position(position):
                 self.logger.info(
                     f"Closed aged position {position.ticket} with negative profit"
@@ -235,7 +235,7 @@ class PositionManager:
 
     def _check_reversal_conditions(self, position, symbol, state, trading_stats):
         """Check and execute position reversal if conditions are met"""
-        if position.profit <= POSITION_REVERSAL_THRESHOLD:
+        if position.profit <= TRADING_CONFIG.POSITION_REVERSAL_THRESHOLD:
             if self.order_manager.close_position(position):
                 reversal_direction = (
                     "sell" if position.type == mt5.ORDER_TYPE_BUY else "buy"

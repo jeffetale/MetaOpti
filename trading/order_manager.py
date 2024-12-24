@@ -1,7 +1,7 @@
 # trading/order_manager.py
 
 import logging
-from config import mt5
+from config import mt5, TRADING_CONFIG
 
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
@@ -199,12 +199,12 @@ class OrderManager:
 
         if direction == "buy":
             price = tick.ask
-            sl = price - (atr * 2)
-            tp = price + (atr * 3)
+            sl = price - (atr * TRADING_CONFIG.SL_ATR_MULTIPLIER)
+            tp = price + (atr * TRADING_CONFIG.TP_ATR_MULTIPLIER)
         else:
             price = tick.bid
-            sl = price + (atr * 2)
-            tp = price - (atr * 3)
+            sl = price + (atr * TRADING_CONFIG.SL_ATR_MULTIPLIER)
+            tp = price - (atr * TRADING_CONFIG.TP_ATR_MULTIPLIER)
 
         self.logger.info(
             f"""
@@ -227,8 +227,8 @@ class OrderManager:
             "price": price,
             "sl": sl,
             "tp": tp,
-            "deviation": 20, 
-            "magic": 234000,
+            "deviation": TRADING_CONFIG.PRICE_DEVIATION_POINTS, 
+            "magic": TRADING_CONFIG.ORDER_MAGIC_NUMBER,
             "comment": "python",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,

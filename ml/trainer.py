@@ -16,7 +16,7 @@ import logging
 import os
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_training_data
-from config import mt5, MODEL_SAVE_DIR
+from config import mt5, MODEL_SAVE_DIR, MT5Config, TRADING_CONFIG
 from symbols import SYMBOLS as symbols
 from datetime import datetime
 import time
@@ -26,7 +26,7 @@ from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
 
 class MLTrainer:
-    def __init__(self, symbols, timeframe=mt5.TIMEFRAME_M5, look_back=1000):
+    def __init__(self, symbols, timeframe=MT5Config.TIMEFRAME, look_back=TRADING_CONFIG.MODEL_TRAINING_LOOKBACK_PERIOD):
         self.logger = logging.getLogger(__name__)
         self.symbols = symbols
         self.timeframe = timeframe

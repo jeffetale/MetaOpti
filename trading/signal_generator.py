@@ -3,7 +3,7 @@
 import logging
 import pandas as pd
 from datetime import datetime
-from config import TIMEFRAME, NEUTRAL_CONFIDENCE_THRESHOLD, mt5, NEUTRAL_HOLD_DURATION
+from config import TIMEFRAME, mt5, TRADING_CONFIG, MT5Config
 from models.trading_state import trading_state
 from ml.features.technical_indicators import TechnicalIndicators
 
@@ -214,7 +214,7 @@ class SignalGenerator:
             neutral_duration = (
                 datetime.now() - state.neutral_start_time
             ).total_seconds()
-            if neutral_duration < NEUTRAL_HOLD_DURATION:
+            if neutral_duration < TRADING_CONFIG.NEUTRAL_HOLD_DURATION:
                 self.logger.info(f"{symbol} still in neutral hold")
                 return False
             state.neutral_start_time = None
@@ -271,7 +271,7 @@ class SignalGenerator:
 
     def _get_market_data(self, symbol):
         """Fetch and prepare market data"""
-        rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 100)
+        rates = mt5.copy_rates_from_pos(symbol, MT5Config.TIMEFRAME, 0, 100)
         if rates is None:
             self.logger.warning(f"No rates available for {symbol}")
             return None
@@ -305,8 +305,8 @@ class SignalGenerator:
             adjusted_confidence = 1 - ml_confidence
             
         if (
-            adjusted_confidence <= NEUTRAL_CONFIDENCE_THRESHOLD
-            or abs(ml_predicted_return) < 0.0001  # absolute value for return
+            adjusted_confidence <= TRADING_CONFIG.NEUTRAL_CONFIDENCE_THRESHOLD
+            or abs(ml_predicted_return) < TRADING_CONFIG.MIN_PREDICTED_RETURN # absolute value for return
         ):
             trading_state.symbol_states[symbol].neutral_start_time = datetime.now()
             return True
