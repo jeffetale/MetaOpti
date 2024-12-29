@@ -1,10 +1,14 @@
 # trading/order_manager.py
 
 import logging
-from config import mt5, TRADING_CONFIG
+from config import mt5, TRADING_CONFIG, update_risk_profile
 
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
+
+update_risk_profile('AGGRESSIVE')
+# update_risk_profile('MODERATE')
+# update_risk_profile('CONSERVATIVE')
 
 
 class OrderManager:

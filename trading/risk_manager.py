@@ -2,11 +2,15 @@
 
 import logging
 from datetime import datetime, timedelta
-from config import TRADING_CONFIG
+from config import TRADING_CONFIG, update_risk_profile
 from models.trading_state import trading_state
 
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
+
+update_risk_profile('AGGRESSIVE')
+# update_risk_profile('MODERATE')
+# update_risk_profile('CONSERVATIVE')
 
 class RiskManager:
     def __init__(self):
@@ -27,17 +31,16 @@ class RiskManager:
         # Check win rate
         if state.trades_count > 10 and state.win_rate < TRADING_CONFIG.MIN_WIN_RATE:
             # Allow trading again after cooling period
-            cooling_period = datetime.now() - state.last_trade_time
-            if cooling_period < timedelta(minutes=TRADING_CONFIG.COOLING_PERIOD_SECONDS):
+            cooling_period = (datetime.now() - state.last_trade_time).total_seconds()
+            if cooling_period < TRADING_CONFIG.COOLING_PERIOD_SECONDS:
                 return False
 
         # Check recent performance
         if state.trades_history:
             recent_trades = state.trades_history[-3:]
             if sum(1 for profit in recent_trades if profit < 0) >= 2:
-                # Two or more losses in last three trades
-                cooling_period = datetime.now() - state.last_trade_time
-                if cooling_period < timedelta(minutes=15):
+                cooling_period = (datetime.now() - state.last_trade_time).total_seconds()
+                if cooling_period < TRADING_CONFIG.COOLING_PERIOD_SECONDS:
                     return False
 
         # Check global account risk
@@ -89,7 +92,7 @@ class RiskManager:
             # Reduce volume after each loss
             state.volume = max(state.volume * 0.5, TRADING_CONFIG.INITIAL_VOLUME * TRADING_CONFIG.MIN_VOLUME_MULTIPLIER)
             return
-            
+
         if state.win_rate > 0.6:
             state.volume = min(state.volume * TRADING_CONFIG.VOLUME_STEP_UP, TRADING_CONFIG.INITIAL_VOLUME * 1.5)  # More conservative increase
         elif state.win_rate < 0.4:
