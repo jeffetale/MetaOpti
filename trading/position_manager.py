@@ -87,7 +87,7 @@ class PositionManager:
             self.logger.error(f"Error in break-even plus management: {e}")
 
     def _enhanced_trailing_stop(self, position, symbol):
-        """Advanced trailing stop with better profit protection"""
+        """Advanced trailing stop with more aggressive profit protection"""
         try:
             # Get current market price
             tick = mt5.symbol_info_tick(symbol)
@@ -103,100 +103,91 @@ class PositionManager:
             import numpy as np
 
             df = pd.DataFrame(rates)
-            df["high_low"] = df["high"] - df["low"]
-            df["high_close"] = np.abs(df["high"] - df["close"].shift(1))
-            df["low_close"] = np.abs(df["low"] - df["close"].shift(1))
-            df["tr"] = df[["high_low", "high_close", "low_close"]].max(axis=1)
+            df["tr"] = np.maximum(
+                df["high"] - df["low"],
+                np.maximum(
+                    abs(df["high"] - df["close"].shift(1)),
+                    abs(df["low"] - df["close"].shift(1))
+                )
+            )
             atr = df["tr"].mean()
 
-            current_price = (
-                tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
-            )
+            current_price = tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
             position_id = position.ticket
 
             # Initialize trailing data if not exists
             if position_id not in self.trailing_stops:
                 self.trailing_stops[position_id] = {
-                    "highest_price": (
-                        current_price
-                        if position.type == mt5.ORDER_TYPE_BUY
-                        else float("inf")
-                    ),
-                    "lowest_price": (
-                        current_price
-                        if position.type == mt5.ORDER_TYPE_SELL
-                        else float("-inf")
-                    ),
+                    "highest_price": current_price if position.type == mt5.ORDER_TYPE_BUY else float("inf"),
+                    "lowest_price": current_price if position.type == mt5.ORDER_TYPE_SELL else float("-inf"),
                     "max_profit": 0,
-                    "profit_locked": False,
-                    "breakeven_set": False,
+                    "profit_locked": False
                 }
 
             trail_data = self.trailing_stops[position_id]
-
+            
             # Calculate profit in pips
             symbol_info = mt5.symbol_info(symbol)
-            if not symbol_info:
-                return
-
             point = symbol_info.point
             profit_pips = position.profit / (point * position.volume)
 
             # Update maximum profit reached
-            current_profit = position.profit
-            trail_data["max_profit"] = max(trail_data["max_profit"], current_profit)
-
-            # Break-even logic once we have sufficient profit
-            if (
-                not trail_data["breakeven_set"] and profit_pips >= 15
-            ):  # Increased from 10 to 15 pips
+            trail_data["max_profit"] = max(trail_data["max_profit"], position.profit)
+            
+            # Early profit protection - move stop loss to break even + small buffer
+            if profit_pips >= 10 and not trail_data.get("breakeven_set", False):  # Reduced from 15 to 10 pips
                 breakeven_level = position.price_open + (
-                    5 * point if position.type == mt5.ORDER_TYPE_BUY else -5 * point
+                    2 * point if position.type == mt5.ORDER_TYPE_BUY else -2 * point
                 )
                 self._modify_stop_loss(position, breakeven_level)
                 trail_data["breakeven_set"] = True
-                self.logger.info(
-                    f"Set break-even stop for {symbol} position {position_id}"
-                )
                 return
 
-            # Enhanced trailing stop logic with wider initial stops
+            # Progressive trailing stop based on profit level
             if position.type == mt5.ORDER_TYPE_BUY:
                 if current_price > trail_data["highest_price"]:
                     trail_data["highest_price"] = current_price
-
-                    # Trail distance calculation - wider initial stops
-                    if profit_pips > 30:  
-                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR
-                    elif profit_pips > 15:  
-                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_MID_ATR  # Increased from 1.5
+                    
+                    # Tighter trailing stops as profit increases
+                    if profit_pips > 30:
+                        trail_distance = atr * 0.5  # Very tight trail for large profits
+                    elif profit_pips > 20:
+                        trail_distance = atr * 0.75  # Tighter trail for medium profits
+                    elif profit_pips > 10:
+                        trail_distance = atr * 1.0  # Standard trail for small profits
                     else:
-                        trail_distance = (
-                            atr * TRADING_CONFIG.TRAILING_STOP_INITIAL_ATR
-                        )  
+                        trail_distance = atr * 1.5  # Wide trail initially
 
                     new_sl = current_price - trail_distance
-
+                    
                     if not position.sl or new_sl > position.sl:
                         self._modify_stop_loss(position, new_sl)
 
             else:  # SELL position
                 if current_price < trail_data["lowest_price"]:
                     trail_data["lowest_price"] = current_price
-
-                    if profit_pips > 30:  
-                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR
-                    elif profit_pips > 15:  
-                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_MID_ATR  
+                    
+                    if profit_pips > 30:
+                        trail_distance = atr * 0.5
+                    elif profit_pips > 20:
+                        trail_distance = atr * 0.75
+                    elif profit_pips > 10:
+                        trail_distance = atr * 1.0
                     else:
-                        trail_distance = (
-                            atr * TRADING_CONFIG.TRAILING_STOP_INITIAL_ATR
-                        ) 
+                        trail_distance = atr * 1.5
 
                     new_sl = current_price + trail_distance
-
+                    
                     if not position.sl or new_sl < position.sl:
                         self._modify_stop_loss(position, new_sl)
+
+            # Profit protection - close position if profit drops significantly from peak
+            max_profit = trail_data["max_profit"]
+            if max_profit > 0:
+                profit_drawdown = (max_profit - position.profit) / max_profit
+                if profit_drawdown >= 0.5 and position.profit > 0:  # Close if we've lost 50% of max profit
+                    self.order_manager.close_position(position)
+                    self.logger.info(f"Closed position {position_id} to protect profits. Max profit: {max_profit}, Current profit: {position.profit}")
 
         except Exception as e:
             self.logger.error(f"Error in enhanced trailing stop management: {e}")
