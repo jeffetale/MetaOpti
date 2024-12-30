@@ -47,38 +47,41 @@ class PositionManager:
             if not symbol_info:
                 return
 
-            # Calculate point value
+            # Calculate point value and profit in pips
             point = symbol_info.point
             profit_pips = position.profit / (point * position.volume)
 
-            # If profit exceeds threshold (20 pips)
-            if profit_pips >= 20:
-                # Calculate break-even level plus 5 pips
+            # Define the breakeven level based on profit condition
+            breakeven_plus = None
+            
+            if profit_pips >= 20:  # Higher threshold with more protective pips
+                # Calculate break-even level plus configured pips
                 breakeven_plus = position.price_open + (
-                    TRADING_CONFIG.BREAKEVEN_PLUS_PIPS * point if position.type == mt5.ORDER_TYPE_BUY else -TRADING_CONFIG.BREAKEVEN_PLUS_PIPS * point
+                    TRADING_CONFIG.BREAKEVEN_PLUS_PIPS * point if position.type == mt5.ORDER_TYPE_BUY 
+                    else -TRADING_CONFIG.BREAKEVEN_PLUS_PIPS * point
+                )
+            elif position.profit > 10:  # Lower threshold with tighter protection
+                # Calculate break-even level plus 2 pips
+                breakeven_plus = position.price_open + (
+                    2 * point if position.type == mt5.ORDER_TYPE_BUY 
+                    else -2 * point
                 )
 
-                # Only modify if new stop loss is better than existing
-                if (
-                    position.sl is None
-                    or (
-                        position.type == mt5.ORDER_TYPE_BUY
-                        and breakeven_plus > position.sl
-                    )
-                    or (
-                        position.type == mt5.ORDER_TYPE_SELL
-                        and breakeven_plus < position.sl
-                    )
-                ):
-                    self._modify_stop_loss(position, breakeven_plus)
-                    self.logger.info(
-                        f"""
-                        ✅ Set break-even plus for {position.symbol}:
-                        🎫 Ticket: {position.ticket}
-                        💰 Profit Pips: {profit_pips:.1f}
-                        🛑 New SL: {breakeven_plus}
-                        """
-                    )
+            # Only modify if breakeven level was set and new stop loss is better than existing
+            if breakeven_plus and (
+                position.sl is None
+                or (position.type == mt5.ORDER_TYPE_BUY and breakeven_plus > position.sl)
+                or (position.type == mt5.ORDER_TYPE_SELL and breakeven_plus < position.sl)
+            ):
+                self._modify_stop_loss(position, breakeven_plus)
+                self.logger.info(
+                    f"""
+                    ✅ Set break-even plus for {position.symbol}:
+                    🎫 Ticket: {position.ticket}
+                    💰 Profit Pips: {profit_pips:.1f}
+                    🛑 New SL: {breakeven_plus}
+                    """
+                )
 
         except Exception as e:
             self.logger.error(f"Error in break-even plus management: {e}")
@@ -163,14 +166,14 @@ class PositionManager:
                     trail_data["highest_price"] = current_price
 
                     # Trail distance calculation - wider initial stops
-                    if profit_pips > 30:  # Increased from 20
+                    if profit_pips > 30:  
                         trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR
-                    elif profit_pips > 15:  # Increased from 10
-                        trail_distance = atr * 2.0  # Increased from 1.5
+                    elif profit_pips > 15:  
+                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_MID_ATR  # Increased from 1.5
                     else:
                         trail_distance = (
                             atr * TRADING_CONFIG.TRAILING_STOP_INITIAL_ATR
-                        )  # Fixed: Using correct parameter
+                        )  
 
                     new_sl = current_price - trail_distance
 
@@ -181,10 +184,10 @@ class PositionManager:
                 if current_price < trail_data["lowest_price"]:
                     trail_data["lowest_price"] = current_price
 
-                    if profit_pips > 30:  # Increased from 20
+                    if profit_pips > 30:  
                         trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_TIGHT_ATR
-                    elif profit_pips > 15:  # Increased from 10
-                        trail_distance = atr * 2.0  # Increased from 1.5
+                    elif profit_pips > 15:  
+                        trail_distance = atr * TRADING_CONFIG.TRAILING_STOP_MID_ATR  
                     else:
                         trail_distance = (
                             atr * TRADING_CONFIG.TRAILING_STOP_INITIAL_ATR
@@ -246,16 +249,15 @@ class PositionManager:
 
     def _manage_position_profit(self, position, symbol, state, trading_stats):
         """Monitor and manage position profit/loss"""
-        if position.profit <= -15.80:
+        # Close losing positions at max loss
+        if position.profit <= -50.80:
             if self.order_manager.close_position(position):
-                self.logger.info(
-                    f"Closed position {position.ticket} due to significant loss"
-                )
-                self.risk_manager.adjust_trading_parameters(
-                    symbol, position.profit, state
-                )
-                if trading_stats:
-                    trading_stats.log_trade(symbol, "close", position.profit, False)
+                self.logger.info(f"Closed position {position.ticket} due to significant loss")
+                
+        # Lock in profits when they reach certain thresholds
+        elif position.profit >= 30:  # Add profit taking
+            if self.order_manager.close_position(position):
+                self.logger.info(f"Closed position {position.ticket} to lock in profits")
 
     def _check_reversal_conditions(self, position, symbol, state, trading_stats):
         """Check and execute position reversal if conditions are met"""
