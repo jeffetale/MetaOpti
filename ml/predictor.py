@@ -1,20 +1,35 @@
-# ml/predictor.py
-
 import tensorflow as tf
 import joblib
 import logging
 from typing import Tuple, Optional
-from config import mt5, MODEL_SAVE_DIR, TRADING_CONFIG, MT5Config
+from config import (
+    mt5,
+    MODEL_SAVE_DIR,
+    BACKTEST_MODEL_SAVE_DIR,
+    TRADING_CONFIG,
+    MT5Config,
+    BackTest,
+)
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_prediction_data
 import os
+from datetime import datetime
 
 from logging_config import setup_comprehensive_logging
+
 setup_comprehensive_logging()
 
+
 class MLPredictor:
-    def __init__(self, symbol):
+    def __init__(
+        self,
+        symbol: str,
+        backtest_mode: bool = False,
+        backtest_date: Optional[datetime] = None,
+    ):
         self.symbol = symbol
+        self.backtest_mode = backtest_mode
+        self.backtest_date = backtest_date
         self.direction_model = None
         self.return_model = None
         self.scaler = None
@@ -28,23 +43,44 @@ class MLPredictor:
         self.predict_return = tf.function(self._predict_return, reduce_retracing=True)
 
     def load_models(self):
-        """Load pre-trained models for a specific symbol"""
+        """Load pre-trained models based on mode (live or backtest)"""
         try:
+            if self.backtest_mode and self.backtest_date:
+                # For backtest mode, load models with timestamp
+                timestamp = self.backtest_date.strftime("%Y%m%d_%H")
+                model_dir = BACKTEST_MODEL_SAVE_DIR
+                model_prefix = f"{self.symbol}_{timestamp}"
+            else:
+                # For live trading, load latest models
+                model_dir = MODEL_SAVE_DIR
+                model_prefix = self.symbol
+
             # Load metadata first to get feature names
-            metadata = joblib.load(os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_metadata.pkl"))
+            metadata = joblib.load(
+                os.path.join(model_dir, f"{model_prefix}_metadata.pkl")
+            )
             self.features = metadata.get("features", [])
 
+            # Load direction and return models
             self.direction_model = tf.keras.models.load_model(
-                os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_direction_model.keras")
+                os.path.join(model_dir, f"{model_prefix}_direction_model.keras")
             )
             self.return_model = tf.keras.models.load_model(
-                os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_return_model.keras")
+                os.path.join(model_dir, f"{model_prefix}_return_model.keras")
             )
-            self.scaler = joblib.load(os.path.join(MODEL_SAVE_DIR, f"{self.symbol}_scaler.pkl"))
+            self.scaler = joblib.load(
+                os.path.join(model_dir, f"{model_prefix}_scaler.pkl")
+            )
 
-            logging.info(f"Models loaded for {self.symbol}")
+            logging.info(
+                f"Models loaded for {self.symbol} {'(backtest)' if self.backtest_mode else '(live)'}"
+            )
         except FileNotFoundError:
-            logging.error(f"Models for {self.symbol} not found. Train models first.")
+            logging.error(
+                f"Models for {self.symbol} not found in "
+                f"{'backtest' if self.backtest_mode else 'live'} mode. "
+                "Train models first."
+            )
             return None
 
     def _predict_direction(self, scaled_features):
@@ -56,17 +92,41 @@ class MLPredictor:
         return self.return_model(scaled_features)
 
     def predict(
-        self, timeframe=MT5Config.TIMEFRAME, look_back=TRADING_CONFIG.MODEL_PREDICTION_LOOKBACK_PERIODS, threshold=TRADING_CONFIG.HIGH_CONFIDENCE_THRESHOLD
+        self,
+        timeframe=None,
+        look_back=None,
+        threshold=None,
+        current_time: Optional[datetime] = None,
     ) -> Tuple[Optional[str], float, float]:
         """Predict trading signal and potential return"""
+        # Set default parameters based on mode
+        if timeframe is None:
+            timeframe = (
+                BackTest.TIMEFRAME if self.backtest_mode else MT5Config.TIMEFRAME
+            )
+        if look_back is None:
+            look_back = (
+                BackTest.PREDICTION_LOOKBACK
+                if self.backtest_mode
+                else TRADING_CONFIG.MODEL_PREDICTION_LOOKBACK_PERIODS
+            )
+        if threshold is None:
+            threshold = TRADING_CONFIG.HIGH_CONFIDENCE_THRESHOLD
+
         if not all(
             [self.direction_model, self.return_model, self.scaler, self.features]
         ):
             logging.error("Models not loaded. Cannot predict.")
             return None, 0, 0
 
-        # Fetch latest price data
-        rates_frame = fetch_historical_data(self.symbol, timeframe, look_back)
+        # Fetch historical data based on mode
+        if self.backtest_mode and current_time:
+            rates_frame = fetch_historical_data(
+                self.symbol, timeframe, look_back, end_date=current_time
+            )
+        else:
+            rates_frame = fetch_historical_data(self.symbol, timeframe, look_back)
+
         if rates_frame is None:
             return None, 0, 0
 

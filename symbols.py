@@ -1,7 +1,7 @@
 # symbols.py
 
 # Trading and training Symbols
-#SYMBOLS = [
+# SYMBOLS = [
 #    "XAUUSD",
 #    "XTIUSD",]
 
@@ -9,6 +9,8 @@ SYMBOLS = [
      "XAUUSD",
      "XTIUSD",
      "XAGUSD",
+     "XRPUSD",
+     "LTCUSD",
      "US30",
      "USTEC",
      "BTCUSD",
@@ -21,6 +23,10 @@ SYMBOLS = [
      "GBPUSD",
      "EURUSD",
  ]
+
+BACKTEST_SYMBOLS = [
+    "EURUSD"
+]
 
 # SYMBOLS = ["EURUSD", "GBPUSD", "USDCHF", "USDJPY", "AUDUSD", "NZDUSD", "USDCAD", "USDSEK", "EURAUD"]
 
