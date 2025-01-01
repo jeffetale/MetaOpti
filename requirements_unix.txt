@@ -1,3 +1,5 @@
+# python 3.8.10
+
 absl-py==2.1.0
 astunparse==1.6.3
 bleach==4.1.0
@@ -75,3 +77,4 @@ webencodings==0.5.1
 Werkzeug==3.0.6
 wrapt==1.17.0
 zipp==3.6.0
+
