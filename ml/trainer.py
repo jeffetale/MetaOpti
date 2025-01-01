@@ -5,6 +5,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
 import joblib
+from pathlib import Path
 import logging
 import os
 from utils.market_utils import fetch_historical_data
@@ -13,7 +14,7 @@ from config import mt5, MODEL_SAVE_DIR, MT5Config, TRADING_CONFIG
 from symbols import SYMBOLS as symbols
 from datetime import datetime
 import time
-from .model_optimization import perform_hyperparameter_optimization
+from model_optimization import perform_hyperparameter_optimization
 
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
@@ -183,9 +184,11 @@ class MLTrainer:
                         }
                     }
 
+                    model_path = Path(MODEL_SAVE_DIR)
+
                     joblib.dump(
                         optimization_results,
-                        os.path.join(MODEL_SAVE_DIR, f"{symbol}_optimization_results.pkl")
+                        model_path / f"{symbol}_optimization_results.pkl"
                     )
 
                     # Evaluate models
@@ -199,13 +202,10 @@ class MLTrainer:
                     self.logger.info(f"Direction Model - Test Accuracy: {dir_accuracy:.4f}")
                     self.logger.info(f"Return Model - Test MAE: {ret_mae:.4f}")
 
-                    # Save models and scaler
-                    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-
                     # Save the best models
-                    best_direction_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_direction_model.keras"))
-                    best_return_model.save(os.path.join(MODEL_SAVE_DIR, f"{symbol}_return_model.keras"))
-                    joblib.dump(scaler, os.path.join(MODEL_SAVE_DIR, f"{symbol}_scaler.pkl"))
+                    best_direction_model.save(str(model_path / f"{symbol}_direction_model.keras"))
+                    best_return_model.save(str(model_path / f"{symbol}_return_model.keras"))
+                    joblib.dump(scaler, model_path / f"{symbol}_scaler.pkl")
 
                     # Save model metadata
                     model_metadata = {
@@ -226,7 +226,7 @@ class MLTrainer:
                     try:
                         joblib.dump(
                             model_metadata,
-                            os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl"),
+                            model_path / f"{symbol}_metadata.pkl"
                         )
                     except Exception as e:
                         self.logger.error(

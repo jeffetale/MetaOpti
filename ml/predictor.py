@@ -12,7 +12,7 @@ from config import (
 )
 from utils.market_utils import fetch_historical_data
 from utils.calculation_utils import prepare_prediction_data
-import os
+from pathlib import Path
 from datetime import datetime
 
 from logging_config import setup_comprehensive_logging
@@ -45,41 +45,47 @@ class MLPredictor:
     def load_models(self):
         """Load pre-trained models based on mode (live or backtest)"""
         try:
+            # Convert model directories to Path objects
             if self.backtest_mode and self.backtest_date:
                 # For backtest mode, load models with timestamp
                 timestamp = self.backtest_date.strftime("%Y%m%d_%H")
-                model_dir = BACKTEST_MODEL_SAVE_DIR
+                model_dir = Path(BACKTEST_MODEL_SAVE_DIR)
                 model_prefix = f"{self.symbol}_{timestamp}"
             else:
                 # For live trading, load latest models
-                model_dir = MODEL_SAVE_DIR
+                model_dir = Path(MODEL_SAVE_DIR)
                 model_prefix = self.symbol
 
             # Load metadata first to get feature names
             metadata = joblib.load(
-                os.path.join(model_dir, f"{model_prefix}_metadata.pkl")
+                model_dir / f"{model_prefix}_metadata.pkl"
             )
             self.features = metadata.get("features", [])
 
             # Load direction and return models
             self.direction_model = tf.keras.models.load_model(
-                os.path.join(model_dir, f"{model_prefix}_direction_model.keras")
+                str(model_dir / f"{model_prefix}_direction_model.keras")
             )
             self.return_model = tf.keras.models.load_model(
-                os.path.join(model_dir, f"{model_prefix}_return_model.keras")
+                str(model_dir / f"{model_prefix}_return_model.keras")
             )
             self.scaler = joblib.load(
-                os.path.join(model_dir, f"{model_prefix}_scaler.pkl")
+                model_dir / f"{model_prefix}_scaler.pkl"
             )
 
             logging.info(
                 f"Models loaded for {self.symbol} {'(backtest)' if self.backtest_mode else '(live)'}"
             )
-        except FileNotFoundError:
+        except FileNotFoundError as e:
             logging.error(
                 f"Models for {self.symbol} not found in "
                 f"{'backtest' if self.backtest_mode else 'live'} mode. "
-                "Train models first."
+                f"Train models first. Error: {str(e)}"
+            )
+            return None
+        except Exception as e:
+            logging.error(
+                f"Error loading models for {self.symbol}: {str(e)}"
             )
             return None
 
