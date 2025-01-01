@@ -1,88 +1,67 @@
-# backtest/backtest_data_fetcher.py
-
-from config import mt5
-import pandas as pd
 from datetime import datetime, timezone, timedelta
+import pandas as pd
 import logging
-from typing import Optional
-
-logger = logging.getLogger(__name__)
-
+from typing import Optional, Tuple
+import MetaTrader5 as mt5
 
 class BacktestDataFetcher:
     def __init__(self):
-        # Initialize MT5 connection if not already initialized
-        if not mt5.initialize():
-            raise RuntimeError(f"MT5 initialization failed: {mt5.last_error()}")
-
-        # Hardcoded config values
+        self.logger = logging.getLogger(__name__)
         self.TIMEFRAME = mt5.TIMEFRAME_H1
-        self.TRAINING_LOOKBACK = 1000
-        self.TRAIN_WINDOW = timedelta(days=30)
-        self.START_DATE = datetime(2023, 12, 1, tzinfo=timezone.utc)
-        self.END_DATE = datetime(2023, 12, 2, tzinfo=timezone.utc)
+        self.MIN_REQUIRED_PERIODS = 100  # Minimum periods needed for meaningful training
+
+    def validate_date_range(
+        self, start_date: datetime, end_date: datetime
+    ) -> Tuple[datetime, datetime]:
+        """Validate and adjust date range if needed"""
+        if not start_date.tzinfo:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if not end_date.tzinfo:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+            
+        # Add buffer to start date to ensure enough training data
+        adjusted_start = start_date - timedelta(days=60)  # Extra buffer for training
+        
+        return adjusted_start, end_date
 
     def fetch_historical_data(
         self, symbol: str, start_date: datetime, end_date: datetime
     ) -> Optional[pd.DataFrame]:
-        """
-        Fetch historical data for the given symbol and timeframe using MT5's copy_rates_range
-
-        Args:
-            symbol: Trading symbol (e.g., "EURUSD")
-            start_date: Start date for data fetching (must be timezone-aware)
-            end_date: End date for data fetching (must be timezone-aware)
-
-        Returns:
-            DataFrame with historical data or None if there's an error
-        """
+        """Fetch and validate historical data"""
         try:
-            # Ensure dates are timezone-aware
-            if start_date.tzinfo is None:
-                start_date = start_date.replace(tzinfo=timezone.utc)
-            if end_date.tzinfo is None:
-                end_date = end_date.replace(tzinfo=timezone.utc)
-
-            # Fetch data from MT5
+            start_date, end_date = self.validate_date_range(start_date, end_date)
+            
+            # Fetch data
             rates = mt5.copy_rates_range(symbol, self.TIMEFRAME, start_date, end_date)
-
-            if rates is None:
-                logger.error(f"Failed to fetch data for {symbol}: {mt5.last_error()}")
+            if rates is None or len(rates) == 0:
+                self.logger.error(
+                    f"No data received for {symbol} between {start_date} and {end_date}"
+                )
                 return None
 
             # Convert to DataFrame
             df = pd.DataFrame(rates)
-
-            # Convert timestamp to datetime
-            df["time"] = pd.to_datetime(df["time"], unit="s")
-
-            # Set index
-            df.set_index("time", inplace=True)
-
-            # Basic data validation
-            if len(df) < self.TRAINING_LOOKBACK:
-                logger.warning(
-                    f"Retrieved {len(df)} rows for {symbol}, "
-                    f"less than required {self.TRAINING_LOOKBACK}"
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            df.set_index('time', inplace=True)
+            
+            # Validate data sufficiency
+            if len(df) < self.MIN_REQUIRED_PERIODS:
+                self.logger.error(
+                    f"Insufficient data for {symbol}. Got {len(df)} periods, "
+                    f"need at least {self.MIN_REQUIRED_PERIODS}"
                 )
-
+                return None
+                
             return df
 
         except Exception as e:
-            logger.error(f"Error fetching data for {symbol}: {e}")
+            self.logger.error(f"Error fetching data for {symbol}: {str(e)}")
             return None
 
-    def fetch_training_data(
-        self, symbol: str, backtest_date: datetime
-    ) -> Optional[pd.DataFrame]:
-        """Fetch training data for the given symbol up to the backtest date"""  
-
-        # Calculate training period
-        training_end = backtest_date
-        training_start = training_end - self.TRAIN_WINDOW
-
-        return self.fetch_historical_data(symbol, training_start, training_end)
-
-    def __del__(self):
-        """Cleanup MT5 connection on object destruction"""
-        mt5.shutdown()
+    def check_data_availability(self, symbol: str, start_date: datetime, end_date: datetime) -> bool:
+        """Check if sufficient data is available before proceeding"""
+        try:
+            df = self.fetch_historical_data(symbol, start_date, end_date)
+            return df is not None and len(df) >= self.MIN_REQUIRED_PERIODS
+        except Exception:
+            return False

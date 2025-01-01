@@ -14,7 +14,7 @@ from config import mt5, MODEL_SAVE_DIR, MT5Config, TRADING_CONFIG
 from symbols import SYMBOLS as symbols
 from datetime import datetime
 import time
-from model_optimization import perform_hyperparameter_optimization
+from ml.model_optimization import perform_hyperparameter_optimization
 
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()

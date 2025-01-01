@@ -14,7 +14,8 @@ from ml.predictor import MLPredictor
 from config import TRADING_CONFIG, BackTest, mt5
 from utils.market_utils import fetch_historical_data
 from symbols import BACKTEST_SYMBOLS
-from backtest_model_trainer import BacktestMLTrainer
+from backtest_model_trainer import BacktestModelTrainer
+from datetime import timezone
 
 setup_comprehensive_logging()
 
@@ -49,7 +50,7 @@ class Backtester:
         symbols: List[str],
         start_date: datetime,
         end_date: datetime,
-        initial_balance: float = BackTest.INITIAL_BALANCE,
+        initial_balance: float = 10000,
         models: Optional[Dict[str, Any]] = None,
     ):
         self.logger = logging.getLogger(__name__)
@@ -92,10 +93,18 @@ class Backtester:
 
     def _train_historical_models(self) -> None:
         """Train historical models if none were provided"""
-        self.logger.info(
-            "No pre-trained models provided. Training historical models..."
+        self.logger.info("No pre-trained models provided. Training historical models...")
+        
+        backtest_config = BackTest(
+            START_DATE=self.start_date,
+            END_DATE=self.end_date
         )
-        trainer = BacktestMLTrainer(symbols=self.symbols, backtest_date=self.start_date)
+        
+        trainer = BacktestModelTrainer(
+            symbols=self.symbols,
+            backtest_config=backtest_config
+        )
+        
         self.models = trainer.train_historical_models()
         if not self.models:
             raise RuntimeError("Failed to train historical models")
@@ -127,8 +136,8 @@ class Backtester:
         """Fetch historical data for backtesting"""
         return fetch_historical_data(
             symbol=symbol,
-            timeframe=BackTest.TIMEFRAME,
-            look_back=BackTest.PREDICTION_LOOKBACK,
+            timeframe=mt5.TIMEFRAME_H1,
+            look_back=60,
             start_date=self.start_date,
             end_date=self.end_date,
         )
@@ -170,19 +179,28 @@ if __name__ == "__main__":
         exit()
 
     try:
-        # Train historical models
-        backtest_trainer = BacktestMLTrainer(
-            symbols=BACKTEST_SYMBOLS, backtest_date=BackTest.START_DATE
+        # Create backtest config
+        backtest_config = BackTest(
+            START_DATE=datetime(2023, 12, 1, tzinfo=timezone.utc),
+            END_DATE=datetime(2023, 12, 2, tzinfo=timezone.utc)
         )
+
+        # Initialize trainer with config
+        backtest_trainer = BacktestModelTrainer(
+            symbols=BACKTEST_SYMBOLS,
+            backtest_config=backtest_config
+        )
+        
+        # Train models
         historical_models = backtest_trainer.train_historical_models()
 
         # Run backtest
         backtester = Backtester(
             symbols=BACKTEST_SYMBOLS,
-            start_date=BackTest.START_DATE,
-            end_date=BackTest.END_DATE,
-            initial_balance=BackTest.INITIAL_BALANCE,
-            models=historical_models,
+            start_date=backtest_config.START_DATE,
+            end_date=backtest_config.END_DATE,
+            initial_balance=10000,
+            models=historical_models
         )
 
         backtester.run_backtest()
