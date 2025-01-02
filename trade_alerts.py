@@ -1,10 +1,12 @@
+# trade_alerts.py
+
 import threading
 import time
 import logging
 from pathlib import Path
 from typing import Dict, Optional
 from playsound import playsound
-from config import mt5
+from config import mt5, SOUNDS_DIR
 
 # Setup logging
 logging.basicConfig(
@@ -17,6 +19,7 @@ class TradeAlerts:
     def __init__(self, sound_dir: Optional[str] = None):
         self.shutdown_flag = threading.Event()
         self.position_states: Dict[int, Dict] = {}
+        self.sound_dir = SOUNDS_DIR
 
         # Set default sounds directory or use provided one
         self.sound_dir = (

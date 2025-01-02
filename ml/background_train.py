@@ -1,6 +1,5 @@
 # ml/background_train.py
 
-import os
 from threading import Thread
 import schedule
 import time
@@ -9,6 +8,7 @@ from datetime import datetime, timedelta
 from ml.trainer import MLTrainer
 from logging_config import setup_comprehensive_logging
 import joblib
+from pathlib import Path
 from config import MODEL_SAVE_DIR, initialize_mt5
 
 setup_comprehensive_logging()
@@ -51,7 +51,7 @@ class BackgroundTrainer:
     def _validate_models(self):
         """Check if models exist and are up to date"""
         try:
-            os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+            MODEL_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
             for symbol in self.symbols:
                 # Check if model files exist
@@ -63,13 +63,13 @@ class BackgroundTrainer:
                 ]
 
                 for file in model_files:
-                    file_path = os.path.join(MODEL_SAVE_DIR, file)
-                    if not os.path.exists(file_path):
+                    file_path = MODEL_SAVE_DIR / file
+                    if not file_path.exists():
                         self.logger.warning(f"❌ Missing model file: {file}")
                         return False
 
                 # Check model age
-                metadata_path = os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl")
+                metadata_path = MODEL_SAVE_DIR / f"{symbol}_metadata.pkl"
                 try:
                     metadata = joblib.load(metadata_path)
                     training_time = metadata.get("training_time", None)
@@ -116,7 +116,7 @@ class BackgroundTrainer:
 
             # Update metadata with training time
             for symbol in self.symbols:
-                metadata_path = os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl")
+                metadata_path = MODEL_SAVE_DIR / f"{symbol}_metadata.pkl"
                 try:
                     metadata = joblib.load(metadata_path)
                     metadata["training_time"] = datetime.now()
@@ -230,7 +230,7 @@ class BackgroundTrainer:
 
             # Update metadata with new training time and data size
             for symbol in self.symbols:
-                metadata_path = os.path.join(MODEL_SAVE_DIR, f"{symbol}_metadata.pkl")
+                metadata_path = MODEL_SAVE_DIR / f"{symbol}_metadata.pkl"
                 try:
                     metadata = joblib.load(metadata_path)
                     metadata["training_time"] = datetime.now()

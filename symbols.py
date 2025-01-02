@@ -5,31 +5,31 @@
 #    "XAUUSD",
 #    "XTIUSD",]
 
-SYMBOLS = [
-    "XAUUSD",
-    "XTIUSD",
-    "XAGUSD",
-    "XRPUSD",
-]
-
 # SYMBOLS = [
-#      "XAUUSD",
-#      "XTIUSD",
-#      "XAGUSD",
-#      "XRPUSD",
-#      "LTCUSD",
-#      "US30",
-#      "USTEC",
-#      "BTCUSD",
-#      "ETHUSD",
-#      "BCHUSD",
-#      "DOGUSD",
-#      "LTCUSD",
-#      "EURJPY",
-#      "USDJPY",
-#      "GBPUSD",
-#      "EURUSD",
-#  ]
+#     "XAUUSD",
+#     "XTIUSD",
+#     "XAGUSD",
+#     "XRPUSD",
+# ]
+
+SYMBOLS = [
+     "XAUUSD",
+     "XTIUSD",
+     "XAGUSD",
+     "XRPUSD",
+     "LTCUSD",
+     "US30",
+     "USTEC",
+     "BTCUSD",
+     "ETHUSD",
+     "BCHUSD",
+     "DOGUSD",
+     "LTCUSD",
+     "EURJPY",
+     "USDJPY",
+     "GBPUSD",
+     "EURUSD",
+ ]
 
 BACKTEST_SYMBOLS = [
     "EURUSD"

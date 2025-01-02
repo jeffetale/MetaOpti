@@ -44,56 +44,49 @@ class MLPredictor:
 
     def _get_model_paths(self) -> Tuple[Path, str]:
         """Get the model directory and prefix based on mode and symbol"""
-        # Set base directory based on mode
-        if self.backtest_mode:
-            base_dir = Path(BACKTEST_MODEL_SAVE_DIR)
-        else:
-            base_dir = Path(MODEL_SAVE_DIR)
-        
-        # Add symbol subdirectory
-        model_dir = base_dir / self.symbol
-        
+        # Use base directory from config
+        base_dir = BACKTEST_MODEL_SAVE_DIR if self.backtest_mode else MODEL_SAVE_DIR
+
+        # Create model directory if it doesn't exist
+        base_dir.mkdir(parents=True, exist_ok=True)
+
         # Set model prefix based on mode
         if self.backtest_mode and self.backtest_date:
             timestamp = self.backtest_date.strftime("%Y%m%d_%H")
             model_prefix = f"{self.symbol}_{timestamp}"
         else:
             model_prefix = self.symbol
-            
-        return model_dir, model_prefix
+
+        return base_dir, model_prefix
 
     def load_models(self):
         """Load pre-trained models based on mode (live or backtest)"""
         try:
             # Get model directory and prefix
             model_dir, model_prefix = self._get_model_paths()
-            
-            # Ensure model directory exists
-            if not model_dir.exists():
-                raise FileNotFoundError(
-                    f"Model directory not found: {model_dir}"
-                )
 
             # Load metadata first to get feature names
             metadata_path = model_dir / f"{model_prefix}_metadata.pkl"
             if not metadata_path.exists():
-                raise FileNotFoundError(
-                    f"Metadata file not found: {metadata_path}"
-                )
-                
+                raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+
             metadata = joblib.load(metadata_path)
             self.features = metadata.get("features", [])
 
-            # Load direction and return models
-            self.direction_model = tf.keras.models.load_model(
-                str(model_dir / f"{model_prefix}_direction_model.keras")
-            )
-            self.return_model = tf.keras.models.load_model(
-                str(model_dir / f"{model_prefix}_return_model.keras")
-            )
-            self.scaler = joblib.load(
-                model_dir / f"{model_prefix}_scaler.pkl"
-            )
+            # Define model file paths
+            direction_model_path = model_dir / f"{model_prefix}_direction_model.keras"
+            return_model_path = model_dir / f"{model_prefix}_return_model.keras"
+            scaler_path = model_dir / f"{model_prefix}_scaler.pkl"
+
+            # Check if all required files exist
+            for path in [direction_model_path, return_model_path, scaler_path]:
+                if not path.exists():
+                    raise FileNotFoundError(f"Model file not found: {path}")
+
+            # Load models
+            self.direction_model = tf.keras.models.load_model(str(direction_model_path))
+            self.return_model = tf.keras.models.load_model(str(return_model_path))
+            self.scaler = joblib.load(scaler_path)
 
             logging.info(
                 f"Models loaded for {self.symbol} "
