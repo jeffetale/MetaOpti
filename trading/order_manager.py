@@ -272,7 +272,7 @@ class OrderManager:
             equity_based_volume = (account_info.equity * TRADING_CONFIG.EQUITY_RISK_PER_TRADE) / (price * contract_size)
 
             # Set minimum target volume (can be adjusted based on your preference)
-            min_target_volume = 0.05 # Minimum target of 0.05 lots
+            min_target_volume = 0.3 # Minimum target of 0.05 lots
 
             # Choose volume - take the maximum of our minimum target and calculated volumes
             calculated_volume = max(

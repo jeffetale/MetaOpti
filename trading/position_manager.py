@@ -185,7 +185,7 @@ class PositionManager:
             max_profit = trail_data["max_profit"]
             if max_profit > 0:
                 profit_drawdown = (max_profit - position.profit) / max_profit
-                if profit_drawdown >= 0.5 and position.profit > 0:  # Close if we've lost 50% of max profit
+                if profit_drawdown >= 0.75 and position.profit > 0:  # Close if we've lost 75% of max profit
                     self.order_manager.close_position(position)
                     self.logger.info(f"Closed position {position_id} to protect profits. Max profit: {max_profit}, Current profit: {position.profit}")
 

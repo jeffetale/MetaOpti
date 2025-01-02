@@ -33,6 +33,7 @@ class TradingBot:
         self.trading_stats = None
         self.initial_balance = None
         self.threads = []
+        self.alerts = None
 
         # Initialize components
         self.order_manager = OrderManager()
@@ -44,8 +45,6 @@ class TradingBot:
         self.signal_generators = {
             symbol: SignalGenerator(self.ml_predictors[symbol]) for symbol in SYMBOLS
         }
-        
-        self.alerts = TradeAlerts()
 
     def symbol_trader(self, symbol):
         """Individual symbol trading logic"""
@@ -128,6 +127,14 @@ class TradingBot:
         if not self._initialize_symbols():
             return False
 
+        try:
+            self.alerts = TradeAlerts()
+            logging.info("Trade alerts system initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize trade alerts: {e}")
+            # Continue without alerts if they fail to initialize
+            self.alerts = None
+
         self.trading_stats = TradingStatistics(SYMBOLS)
         return True
 
@@ -156,12 +163,21 @@ class TradingBot:
 
     def start_trading(self):
         """Start trading threads for each symbol"""
+        # Start alerts system first if available
+        if self.alerts:
+            try:
+                self.alerts.start()
+                logging.info("Trade alerts monitoring started")
+            except Exception as e:
+                logging.error(f"Failed to start trade alerts: {e}")
+                self.alerts = None  # Disable alerts if they fail to start
+
+        # Start symbol trading threads
         for symbol in SYMBOLS:
             thread = threading.Thread(target=self.symbol_trader, args=(symbol,))
             thread.daemon = True
             thread.start()
             self.threads.append(thread)
-            self.alerts.start()
 
     def monitor_trading(self):
         """Monitor trading activity and account status"""
@@ -217,6 +233,15 @@ class TradingBot:
 
         SHUTDOWN_EVENT.set()
 
+        # Stop alerts system first if it's running
+        if self.alerts:
+            try:
+                self.alerts.stop()
+                logging.info("Trade alerts system stopped")
+            except Exception as e:
+                logging.error(f"Error stopping trade alerts: {e}")
+
+        # Wait for trading threads to finish
         for thread in self.threads:
             thread.join(timeout=5)
 
@@ -230,8 +255,6 @@ class TradingBot:
 
         session_number = get_next_session_number()
         log_session_end(session_number)
-        
-        self.alerts.stop()
 
         mt5.shutdown()
         logging.info("MT5 connection closed")

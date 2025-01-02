@@ -19,13 +19,13 @@ class TradeAlerts:
     def __init__(self, sound_dir: Optional[str] = None):
         self.shutdown_flag = threading.Event()
         self.position_states: Dict[int, Dict] = {}
-        self.sound_dir = SOUNDS_DIR
+        
 
-        # Set default sounds directory or use provided one
-        self.sound_dir = (
-            Path(sound_dir) if sound_dir else Path(__file__).parent / "sounds"
-        )
-        self.sound_dir.mkdir(exist_ok=True)
+        # Sounds directory
+        self.sound_dir = sound_dir if sound_dir else SOUNDS_DIR
+
+        if not self.sound_dir.exists():
+            self.sound_dir.mkdir(parents=True, exist_ok=True)
 
         # Define threshold configurations
         self.thresholds = {
