@@ -1,3 +1,5 @@
+# backtest/backtest_data_fetcher.py
+
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import logging
@@ -25,14 +27,23 @@ class BacktestDataFetcher:
         return adjusted_start, end_date
 
     def fetch_historical_data(
-        self, symbol: str, start_date: datetime, end_date: datetime
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime
     ) -> Optional[pd.DataFrame]:
         """Fetch and validate historical data"""
         try:
             start_date, end_date = self.validate_date_range(start_date, end_date)
             
-            # Fetch data
-            rates = mt5.copy_rates_range(symbol, self.TIMEFRAME, start_date, end_date)
+            # Fetch data with correct timeframe
+            rates = mt5.copy_rates_range(
+                symbol,
+                self.TIMEFRAME,
+                start_date,
+                end_date
+            )
+            
             if rates is None or len(rates) == 0:
                 self.logger.error(
                     f"No data received for {symbol} between {start_date} and {end_date}"

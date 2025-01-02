@@ -42,24 +42,46 @@ class MLPredictor:
         )
         self.predict_return = tf.function(self._predict_return, reduce_retracing=True)
 
+    def _get_model_paths(self) -> Tuple[Path, str]:
+        """Get the model directory and prefix based on mode and symbol"""
+        # Set base directory based on mode
+        if self.backtest_mode:
+            base_dir = Path(BACKTEST_MODEL_SAVE_DIR)
+        else:
+            base_dir = Path(MODEL_SAVE_DIR)
+        
+        # Add symbol subdirectory
+        model_dir = base_dir / self.symbol
+        
+        # Set model prefix based on mode
+        if self.backtest_mode and self.backtest_date:
+            timestamp = self.backtest_date.strftime("%Y%m%d_%H")
+            model_prefix = f"{self.symbol}_{timestamp}"
+        else:
+            model_prefix = self.symbol
+            
+        return model_dir, model_prefix
+
     def load_models(self):
         """Load pre-trained models based on mode (live or backtest)"""
         try:
-            # Convert model directories to Path objects
-            if self.backtest_mode and self.backtest_date:
-                # For backtest mode, load models with timestamp
-                timestamp = self.backtest_date.strftime("%Y%m%d_%H")
-                model_dir = Path(BACKTEST_MODEL_SAVE_DIR)
-                model_prefix = f"{self.symbol}_{timestamp}"
-            else:
-                # For live trading, load latest models
-                model_dir = Path(MODEL_SAVE_DIR)
-                model_prefix = self.symbol
+            # Get model directory and prefix
+            model_dir, model_prefix = self._get_model_paths()
+            
+            # Ensure model directory exists
+            if not model_dir.exists():
+                raise FileNotFoundError(
+                    f"Model directory not found: {model_dir}"
+                )
 
             # Load metadata first to get feature names
-            metadata = joblib.load(
-                model_dir / f"{model_prefix}_metadata.pkl"
-            )
+            metadata_path = model_dir / f"{model_prefix}_metadata.pkl"
+            if not metadata_path.exists():
+                raise FileNotFoundError(
+                    f"Metadata file not found: {metadata_path}"
+                )
+                
+            metadata = joblib.load(metadata_path)
             self.features = metadata.get("features", [])
 
             # Load direction and return models
@@ -74,7 +96,9 @@ class MLPredictor:
             )
 
             logging.info(
-                f"Models loaded for {self.symbol} {'(backtest)' if self.backtest_mode else '(live)'}"
+                f"Models loaded for {self.symbol} "
+                f"{'(backtest)' if self.backtest_mode else '(live)'} "
+                f"from {model_dir}"
             )
         except FileNotFoundError as e:
             logging.error(
@@ -82,12 +106,10 @@ class MLPredictor:
                 f"{'backtest' if self.backtest_mode else 'live'} mode. "
                 f"Train models first. Error: {str(e)}"
             )
-            return None
+            raise
         except Exception as e:
-            logging.error(
-                f"Error loading models for {self.symbol}: {str(e)}"
-            )
-            return None
+            logging.error(f"Error loading models for {self.symbol}: {str(e)}")
+            raise
 
     def _predict_direction(self, scaled_features):
         """Dedicated method for direction prediction"""

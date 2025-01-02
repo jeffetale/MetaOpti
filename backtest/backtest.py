@@ -10,9 +10,10 @@ from collections import defaultdict
 from trading.signal_generator import SignalGenerator
 from trading.risk_manager import RiskManager
 from trading.position_manager import PositionManager
+from trading.order_manager import OrderManager
 from ml.predictor import MLPredictor
-from config import TRADING_CONFIG, BackTest, mt5
-from utils.market_utils import fetch_historical_data
+from config import BackTest, mt5, BACKTEST_MODEL_SAVE_DIR
+from backtest_data_fetcher import BacktestDataFetcher
 from symbols import BACKTEST_SYMBOLS
 from backtest_model_trainer import BacktestModelTrainer
 from datetime import timezone
@@ -59,37 +60,50 @@ class Backtester:
         self.end_date = end_date
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
-        self.models = models or {}  # Initialize empty dict if None
+        self.models = models or {}
+        
+        self.data_fetcher = BacktestDataFetcher()
 
         # Ensure models are trained if not provided
         if not self.models:
             self._train_historical_models()
 
-        # Initialize predictors in backtest mode
-        self.ml_predictors = {
-            symbol: MLPredictor(
-                symbol=symbol,
-                model=self.models.get(symbol),  # Pass model if available
-                backtest_mode=True,
-                backtest_date=self.start_date,
+        try:
+            # Initialize predictors in backtest mode
+            self.ml_predictors = {}
+            for symbol in symbols:
+                try:
+                    predictor = MLPredictor(
+                        symbol=symbol,
+                        backtest_mode=True,
+                        backtest_date=self.start_date
+                    )
+                    self.ml_predictors[symbol] = predictor
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize predictor for {symbol}: {str(e)}")
+                    raise
+
+            # Initialize trading components
+            self.order_manager = OrderManager()
+            self.risk_manager = RiskManager()
+            self.position_manager = PositionManager(
+                order_manager=self.order_manager,
+                risk_manager=self.risk_manager
             )
-            for symbol in symbols
-        }
+            self.signal_generators = {
+                symbol: SignalGenerator(self.ml_predictors[symbol], backtest_mode=True) 
+                for symbol in symbols
+            }
 
-        self.signal_generators = {
-            symbol: SignalGenerator(self.ml_predictors[symbol]) for symbol in symbols
-        }
-        self.position_manager = PositionManager()
-        self.risk_manager = RiskManager()
+            # Trading state
+            self.open_positions = {}
+            self.closed_positions = []
+            self.equity_curve = []
+            self.metrics = defaultdict(float)
 
-        # Trading state
-        self.open_positions: Dict[str, BacktestPosition] = {}
-        self.closed_positions: List[BacktestPosition] = []
-        self.equity_curve: List[float] = []
-
-        # Performance metrics
-        self.metrics = defaultdict(float)
-        # self.logger = logging.getLogger(__name__)
+        except Exception as e:
+            self.logger.error(f"Error initializing Backtester: {str(e)}")
+            raise
 
     def _train_historical_models(self) -> None:
         """Train historical models if none were provided"""
@@ -108,6 +122,14 @@ class Backtester:
         self.models = trainer.train_historical_models()
         if not self.models:
             raise RuntimeError("Failed to train historical models")
+        
+    def _fetch_backtest_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Fetch historical data for backtesting"""
+        return self.data_fetcher.fetch_historical_data(
+            symbol=symbol,
+            start_date=self.start_date,
+            end_date=self.end_date,
+        )
 
     def run_backtest(self) -> bool:
         """Run the backtest simulation"""
@@ -121,26 +143,170 @@ class Backtester:
                 symbol: self._fetch_backtest_data(symbol) for symbol in self.symbols
             }
 
-            if not all(symbol_data.values()):
-                self.logger.error("Missing data for some symbols")
-                return False
+            # Check if any symbol data is None or empty
+            for symbol, data in symbol_data.items():
+                if data is None or data.empty:
+                    self.logger.error(f"Missing or empty data for symbol {symbol}")
+                    return False
 
-            # Rest of the run_backtest implementation remains the same...
+            # Initialize metrics
+            self.metrics = defaultdict(float)
+            self.metrics['total_trades'] = 0
+            self.metrics['profitable_trades'] = 0
+            self.metrics['total_profit'] = 0.0
+            self.equity_curve = [self.initial_balance]
+
+            # Get the common time index across all symbols
+            common_times = set.intersection(*[set(df.index) for df in symbol_data.values()])
+            time_index = sorted(common_times)
+
+            # Main simulation loop
+            for current_time in time_index:
+                # Update current data point for each symbol
+                current_data = {
+                    symbol: df.loc[df.index == current_time] 
+                    for symbol, df in symbol_data.items()
+                }
+
+                # Process open positions
+                self._process_open_positions(current_data, current_time)
+
+                # Generate new signals
+                for symbol in self.symbols:
+                    if symbol not in self.open_positions:
+                        signal = self.signal_generators[symbol].get_signal(
+                            symbol=symbol,
+                            current_time=current_time
+                        )
+                        
+                        if signal and signal != "hold":
+                            # Calculate position size
+                            price = current_data[symbol]['close'].iloc[0]
+                            volume = self.risk_manager.calculate_position_size(
+                                symbol=symbol,
+                                direction=signal,
+                                current_price=price,
+                                balance=self.current_balance
+                            )
+
+                            # Calculate SL/TP levels
+                            sl, tp = self.risk_manager.calculate_sl_tp(
+                                symbol=symbol,
+                                direction=signal,
+                                entry_price=price,
+                                atr=current_data[symbol]['atr'].iloc[0]
+                            )
+
+                            # Open new position
+                            position = BacktestPosition(
+                                symbol=symbol,
+                                entry_price=price,
+                                direction=signal,
+                                volume=volume,
+                                sl=sl,
+                                tp=tp,
+                                entry_time=current_time
+                            )
+                            self.open_positions[symbol] = position
+
+                # Update equity curve
+                total_equity = self._calculate_current_equity(current_data)
+                self.equity_curve.append(total_equity)
+
+            # Generate final metrics
+            self._calculate_final_metrics()
+            self._generate_report()
             return True
 
         except Exception as e:
             self.logger.error(f"Backtest failed: {str(e)}")
             return False
 
-    def _fetch_backtest_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Fetch historical data for backtesting"""
-        return fetch_historical_data(
-            symbol=symbol,
-            timeframe=mt5.TIMEFRAME_H1,
-            look_back=60,
-            start_date=self.start_date,
-            end_date=self.end_date,
-        )
+    def _process_open_positions(self, current_data: dict, current_time: datetime) -> None:
+        """Process all open positions"""
+        positions_to_close = []
+
+        for symbol, position in self.open_positions.items():
+            current_price = current_data[symbol]['close'].iloc[0]
+            
+            # Check for SL/TP hits
+            if position.direction == "buy":
+                if current_price <= position.sl:
+                    position.exit_reason = "stop_loss"
+                    positions_to_close.append(symbol)
+                elif current_price >= position.tp:
+                    position.exit_reason = "take_profit"
+                    positions_to_close.append(symbol)
+            else:  # sell position
+                if current_price >= position.sl:
+                    position.exit_reason = "stop_loss"
+                    positions_to_close.append(symbol)
+                elif current_price <= position.tp:
+                    position.exit_reason = "take_profit"
+                    positions_to_close.append(symbol)
+
+        # Close positions and update metrics
+        for symbol in positions_to_close:
+            self._close_position(symbol, current_data[symbol]['close'].iloc[0], current_time)
+
+    def _close_position(self, symbol: str, exit_price: float, exit_time: datetime) -> None:
+        """Close a position and update metrics"""
+        position = self.open_positions[symbol]
+        position.exit_price = exit_price
+        position.exit_time = exit_time
+        
+        # Calculate profit/loss
+        if position.direction == "buy":
+            position.profit = (exit_price - position.entry_price) * position.volume
+        else:
+            position.profit = (position.entry_price - exit_price) * position.volume
+        
+        # Update metrics
+        self.metrics['total_trades'] += 1
+        if position.profit > 0:
+            self.metrics['profitable_trades'] += 1
+        self.metrics['total_profit'] += position.profit
+        self.current_balance += position.profit
+        
+        # Move to closed positions
+        self.closed_positions.append(position)
+        del self.open_positions[symbol]
+
+    def _calculate_current_equity(self, current_data: dict) -> float:
+        """Calculate current equity including unrealized P/L"""
+        equity = self.current_balance
+        
+        # Add unrealized profits/losses from open positions
+        for symbol, position in self.open_positions.items():
+            current_price = current_data[symbol]['close'].iloc[0]
+            if position.direction == "buy":
+                unrealized_pnl = (current_price - position.entry_price) * position.volume
+            else:
+                unrealized_pnl = (position.entry_price - current_price) * position.volume
+            equity += unrealized_pnl
+        
+        return equity
+
+    def _calculate_final_metrics(self) -> None:
+        """Calculate final performance metrics"""
+        if self.metrics['total_trades'] > 0:
+            self.metrics['win_rate'] = self.metrics['profitable_trades'] / self.metrics['total_trades']
+            self.metrics['avg_profit'] = self.metrics['total_profit'] / self.metrics['total_trades']
+            
+            # Calculate max drawdown
+            peak = self.initial_balance
+            max_drawdown = 0
+            for equity in self.equity_curve:
+                if equity > peak:
+                    peak = equity
+                drawdown = (peak - equity) / peak
+                max_drawdown = max(max_drawdown, drawdown)
+            self.metrics['max_drawdown'] = max_drawdown
+            
+            # Calculate profit factor
+            total_gains = sum(pos.profit for pos in self.closed_positions if pos.profit > 0)
+            total_losses = abs(sum(pos.profit for pos in self.closed_positions if pos.profit < 0))
+            self.metrics['profit_factor'] = total_gains / total_losses if total_losses > 0 else float('inf')
 
     def _generate_report(self):
         """Generate and print backtest report"""

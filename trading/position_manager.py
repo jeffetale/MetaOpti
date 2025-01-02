@@ -8,7 +8,7 @@ from logging_config import setup_comprehensive_logging
 
 setup_comprehensive_logging()
 
-update_risk_profile('AGGRESSIVE')
+#update_risk_profile('AGGRESSIVE')
 # update_risk_profile('MODERATE')
 # update_risk_profile('CONSERVATIVE')
 
