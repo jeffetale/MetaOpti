@@ -23,6 +23,7 @@ from trading.risk_manager import RiskManager
 from ml.predictor import MLPredictor
 from ml.background_train import BackgroundTrainer
 from utils.market_utils import ensure_mt5_initialized
+from trade_alerts import TradeAlerts
 
 setup_comprehensive_logging()
 
@@ -43,6 +44,8 @@ class TradingBot:
         self.signal_generators = {
             symbol: SignalGenerator(self.ml_predictors[symbol]) for symbol in SYMBOLS
         }
+        
+        self.alerts = TradeAlerts()
 
     def symbol_trader(self, symbol):
         """Individual symbol trading logic"""
@@ -158,6 +161,7 @@ class TradingBot:
             thread.daemon = True
             thread.start()
             self.threads.append(thread)
+            self.alerts.start()
 
     def monitor_trading(self):
         """Monitor trading activity and account status"""
@@ -226,6 +230,8 @@ class TradingBot:
 
         session_number = get_next_session_number()
         log_session_end(session_number)
+        
+        self.alerts.stop()
 
         mt5.shutdown()
         logging.info("MT5 connection closed")

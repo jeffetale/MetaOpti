@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import logging
 from typing import Optional, Tuple
-import MetaTrader5 as mt5
+from config import mt5
 
 class BacktestDataFetcher:
     def __init__(self):
