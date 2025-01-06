@@ -58,7 +58,7 @@ class MT5Config:
     PASSWORD = os.getenv("PASSWORD")
     SERVER = os.getenv("SERVER")
     ACCOUNT_NUMBER = 1234567 #Insert your account number here
-    TIMEFRAME = mt5.TIMEFRAME_M15
+    TIMEFRAME = mt5.TIMEFRAME_M15 # Use your preferred data fetching timeframe
 ```
 4. Create a `.env` file in the projects main directory and input:
    PASSWORD="password" # your account password
