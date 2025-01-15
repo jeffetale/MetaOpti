@@ -1,7 +1,7 @@
 # config.py
 
-# from mt5linux import MetaTrader5
-import MetaTrader5 as mt5
+from mt5linux import MetaTrader5
+# import MetaTrader5 as mt5
 import logging, threading
 from pathlib import Path
 import os
@@ -49,9 +49,9 @@ MT5_PATHS = {
 class MT5Config:
     PASSWORD = os.getenv("PASSWORD")
     SERVER = os.getenv("SERVER")
-    ACCOUNT_NUMBER = 52071754
-    TIMEFRAME = mt5.TIMEFRAME_M15
-    # TIMEFRAME = MetaTrader5.TIMEFRAME_M10
+    ACCOUNT_NUMBER = int(os.getenv("LOGIN"))
+    # TIMEFRAME = mt5.TIMEFRAME_M15
+    TIMEFRAME = MetaTrader5.TIMEFRAME_M5
 
 
 # Trading Parameters Configuration
@@ -59,8 +59,8 @@ class MT5Config:
 class TradingConfig:
     # Volume and Position Sizing
     INITIAL_VOLUME: float = 0.1
-    MIN_TARGET_VOLUME: float = 0.01  # Minimum target volume for opening position if volume and equity calculations are higher
-    MAX_VOLUME_MULTIPLIER: float = 1.5  # Maximum volume increase from initial
+    MIN_TARGET_VOLUME: float = 0.02  # Minimum target volume for opening position if volume and equity calculations are higher
+    MAX_VOLUME_MULTIPLIER: float = 2.5  # Maximum volume increase from initial
     MIN_VOLUME_MULTIPLIER: float = 0.25  # Minimum volume decrease from initial
     VOLUME_STEP_UP: float = 1.15 # Volume increase factor on success
     VOLUME_STEP_DOWN: float = 0.5  # Volume decrease factor on failure
@@ -141,8 +141,8 @@ class BackTest:
     END_DATE: datetime = datetime(2023, 12, 2, tzinfo=timezone.utc)
     TRAINING_LOOKBACK: int = 1000
     PREDICTION_LOOKBACK: int = 100
-    TIMEFRAME: int = mt5.TIMEFRAME_M5
-    # TIMEFRAME: int = MetaTrader5.TIMEFRAME_H1
+    # TIMEFRAME: int = mt5.TIMEFRAME_M5
+    TIMEFRAME: int = MetaTrader5.TIMEFRAME_H1
     INITIAL_BALANCE: float = 10000
     # Training config
     TRAIN_WINDOW: timedelta = timedelta(days=1)
@@ -170,27 +170,42 @@ class TradingState:
 
 
 def initialize_mt5():
-    """Initialize MT5 with proper path handling"""
+    """Initialize MT5 with proper path handling and connection management"""
+    # First try to shutdown any existing connection
+    mt5.shutdown()
+    
     current_os = platform.system()
-    possible_paths = MT5_PATHS.get(current_os, [])
-
-    # Add debug logging
+    possible_paths = MT5_PATHS.get("OSX/Linux" if current_os != "Windows" else "Windows", [])
+    
     logging.info(f"Current OS: {current_os}")
     logging.info(f"Checking paths: {[str(p) for p in possible_paths]}")
-
-    # Add your specific path explicitly
+    
+    # Try to connect without specifying path first (to use existing instance)
+    try:
+        if mt5.initialize(
+            login=int(os.getenv("LOGIN")),  
+            password=os.getenv("PASSWORD"),
+            server=os.getenv("SERVER"),
+            timeout=120000,
+        ):
+            logging.info("Successfully connected to existing MT5 instance")
+            account = mt5.account_info()
+            if account:
+                print(f"Connected - Balance: {account.balance}, Free Margin: {account.margin_free}")
+                return True
+    except Exception as e:
+        logging.warning(f"Could not connect to existing instance: {str(e)}")
+    
+    # If that fails, try with specific paths
     custom_path = Path.home() / ".mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe"
     if custom_path.exists():
         logging.info(f"Found MT5 at custom path: {custom_path}")
         mt5_path = str(custom_path)
     else:
-
         mt5_path = next((str(path) for path in possible_paths if path.exists()), None)
 
     if not mt5_path:
-        logging.error(
-            f"MetaTrader 5 terminal not found in standard locations for {current_os}!"
-        )
+        logging.error(f"MetaTrader 5 terminal not found in standard locations for {current_os}!")
         return False
 
     logging.info(f"Attempting to initialize MT5 with path: {mt5_path}")
@@ -198,10 +213,10 @@ def initialize_mt5():
     try:
         if not mt5.initialize(
             path=mt5_path,
-            login=MT5Config.ACCOUNT_NUMBER,
-            password=MT5Config.PASSWORD,
-            server=MT5Config.SERVER,
-            timeout=60000,
+            login=int(os.getenv("LOGIN")),
+            password=os.getenv("PASSWORD"),
+            server=os.getenv("SERVER"),
+            timeout=120000,
         ):
             error = mt5.last_error()
             logging.error(f"MT5 initialization failed! Error: {error}")
@@ -217,7 +232,7 @@ def initialize_mt5():
 
 
 # Global instances
-# mt5 = MetaTrader5()
+mt5 = MetaTrader5()
 TRADING_CONFIG = TradingConfig()
 trading_state = TradingState()
 SHUTDOWN_EVENT = threading.Event()

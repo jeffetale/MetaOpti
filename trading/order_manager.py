@@ -6,7 +6,7 @@ from config import mt5, TRADING_CONFIG, update_risk_profile
 from logging_config import setup_comprehensive_logging
 setup_comprehensive_logging()
 
-#update_risk_profile('AGGRESSIVE')
+# update_risk_profile('AGGRESSIVE')
 # update_risk_profile('MODERATE')
 # update_risk_profile('CONSERVATIVE')
 
@@ -272,7 +272,7 @@ class OrderManager:
             equity_based_volume = (account_info.equity * TRADING_CONFIG.EQUITY_RISK_PER_TRADE) / (price * contract_size)
 
             # Set minimum target volume (can be adjusted based on your preference)
-            min_target_volume = 0.3 # Minimum target of 0.05 lots
+            min_target_volume = TRADING_CONFIG.MIN_TARGET_VOLUME
 
             # Choose volume - take the maximum of our minimum target and calculated volumes
             calculated_volume = max(
@@ -409,6 +409,60 @@ class OrderManager:
             return True
 
         return False
+
+    def place_hedged_order(
+        self, symbol: str, direction: str, volume: float, atr: float
+    ) -> object:
+        """Place a hedged order with calculated SL/TP levels"""
+        symbol_info = mt5.symbol_info(symbol)
+        if not self._validate_symbol_info(symbol_info, symbol):
+            return None
+
+        tick = mt5.symbol_info_tick(symbol)
+        if not self._validate_tick_info(tick, symbol):
+            return None
+
+        # Calculate entry price
+        entry_price = tick.ask if direction == "buy" else tick.bid
+
+        # Calculate SL/TP distances based on ATR
+        sl_distance = atr * TRADING_CONFIG.SL_ATR_MULTIPLIER
+        tp_distance = atr * TRADING_CONFIG.TP_ATR_MULTIPLIER
+
+        # Calculate SL/TP levels
+        if direction == "buy":
+            sl = entry_price - sl_distance
+            tp = entry_price + tp_distance
+        else:
+            sl = entry_price + sl_distance
+            tp = entry_price - tp_distance
+
+        # Get valid filling mode
+        filling_mode = self._get_valid_filling_mode(symbol)
+        if not filling_mode:
+            return None
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": volume,
+            "type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
+            "price": entry_price,
+            "sl": sl,
+            "tp": tp,
+            "deviation": TRADING_CONFIG.PRICE_DEVIATION_POINTS,
+            "magic": TRADING_CONFIG.ORDER_MAGIC_NUMBER,
+            "comment": "hedged",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling_mode,
+        }
+
+        result = mt5.order_send(request)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            self.logger.info(f"Successfully placed hedged order for {symbol}")
+            return result
+
+        return None
 
     def _send_order(self, request):
         """Send order to MT5 and handle the response"""

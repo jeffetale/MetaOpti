@@ -24,6 +24,7 @@ from ml.predictor import MLPredictor
 from ml.background_train import BackgroundTrainer
 from utils.market_utils import ensure_mt5_initialized
 from trade_alerts import TradeAlerts
+from hedging.hedging_manager import HedgingManager
 
 setup_comprehensive_logging()
 
@@ -42,6 +43,14 @@ class TradingBot:
 
         # Create predictors for each symbol
         self.ml_predictors = {symbol: MLPredictor(symbol) for symbol in SYMBOLS}
+
+        # Create hedging managers for each symbol
+        self.hedging_managers = {
+            symbol: HedgingManager(self.order_manager, self.ml_predictors[symbol])
+            for symbol in SYMBOLS
+        }
+
+        # Initialize signal generators
         self.signal_generators = {
             symbol: SignalGenerator(self.ml_predictors[symbol]) for symbol in SYMBOLS
         }
@@ -52,47 +61,52 @@ class TradingBot:
 
         while not SHUTDOWN_EVENT.is_set():
             try:
-                # Manage existing positions
-                self.position_manager.manage_open_positions(
-                    symbol, trading_state, self.trading_stats
-                )
+                # First manage hedged positions using the symbol-specific hedging manager
+                self.hedging_managers[symbol].manage_hedged_positions(symbol)
 
-                # Check for new trading opportunities
-                if (
-                    not SHUTDOWN_EVENT.is_set()
-                    and self.risk_manager.should_trade_symbol(symbol)
-                ):
-                    positions = mt5.positions_get(symbol=symbol)
+                # Only proceed with regular position management if no hedged positions exist
+                if not self.hedging_managers[symbol].hedged_positions.get(symbol, []):
+                    # Manage existing regular positions
+                    self.position_manager.manage_open_positions(
+                        symbol, trading_state, self.trading_stats
+                    )
 
-                    if not positions:
-                        signal, atr, potential_profit = self.signal_generators[
-                            symbol
-                        ].get_signal(symbol)
+                    # Check for new trading opportunities
+                    if (
+                        not SHUTDOWN_EVENT.is_set()
+                        and self.risk_manager.should_trade_symbol(symbol)
+                    ):
+                        positions = mt5.positions_get(symbol=symbol)
 
-                        if signal == "neutral" or SHUTDOWN_EVENT.is_set():
-                            continue
+                        if not positions:
+                            signal, atr, potential_profit = self.signal_generators[
+                                symbol
+                            ].get_signal(symbol)
 
-                        if signal and atr and potential_profit > 0:
-                            state = trading_state.symbol_states[symbol]
-                            volume = self.risk_manager.calculate_position_size(
-                                symbol, atr, trading_state
-                            )
+                            if signal == "neutral" or SHUTDOWN_EVENT.is_set():
+                                continue
 
-                            success = self.order_manager.place_order(
-                                symbol,
-                                signal,
-                                atr,
-                                volume,
-                                self.trading_stats,
-                                is_ml_signal=True,
-                            )
+                            if signal and atr and potential_profit > 0:
+                                state = trading_state.symbol_states[symbol]
+                                volume = self.risk_manager.calculate_position_size(
+                                    symbol, atr, trading_state
+                                )
 
-                            if success:
-                                state.last_trade_time = datetime.now()
-                            else:
-                                self._handle_failed_trade(state, symbol)
+                                success = self.order_manager.place_order(
+                                    symbol,
+                                    signal,
+                                    atr,
+                                    volume,
+                                    self.trading_stats,
+                                    is_ml_signal=True,
+                                )
 
-                time.sleep(5)  #loop every 5 seconds
+                                if success:
+                                    state.last_trade_time = datetime.now()
+                                else:
+                                    self._handle_failed_trade(state, symbol)
+
+                time.sleep(5)
 
             except Exception as e:
                 if not SHUTDOWN_EVENT.is_set():
@@ -196,36 +210,47 @@ class TradingBot:
 
     def _log_account_status(self, account):
         """Log detailed account and trading status"""
-        account_dict = account._asdict()
-        total_profit = account_dict["profit"]
+        try:
+            account_dict = account._asdict()
+            total_profit = account_dict["profit"]
 
-        active_symbols = sum(
-            1
-            for state in trading_state.symbol_states.values()
-            if not state.is_restricted
-        )
+            active_symbols = sum(
+                1
+                for state in trading_state.symbol_states.values()
+                if not state.is_restricted
+            )
 
-        avg_win_rate = statistics.mean(
-            state.win_rate for state in trading_state.symbol_states.values()
-        )
+            # Get valid win rates and handle empty case
+            win_rates = [
+                state.win_rate 
+                for state in trading_state.symbol_states.values()
+                if hasattr(state, 'win_rate') and state.win_rate is not None
+            ]
+            
+            avg_win_rate = statistics.mean(win_rates) if win_rates else 0.0
 
-        logging.info(
-            """
-            ####### Account Status #######
-            **** Balance: %s ****
-            **** Equity: %s ****
-            **** Profit: %s ****
-            **** Active Symbols: %s ****
-            **** Avg Win Rate: %.2f%% ****
-        """,
-            account_dict["balance"],
-            account_dict["equity"],
-            total_profit,
-            active_symbols,
-            avg_win_rate * 100,
-        )
+            logging.info(
+                """
+                ####### Account Status #######
+                **** Balance: %s ****
+                **** Equity: %s ****
+                **** Profit: %s ****
+                **** Active Symbols: %s ****
+                **** Avg Win Rate: %.2f%% ****
+            """,
+                account_dict["balance"],
+                account_dict["equity"],
+                total_profit,
+                active_symbols,
+                avg_win_rate * 100,
+            )
 
-        trading_state.global_profit = total_profit
+            trading_state.global_profit = total_profit
+            
+        except Exception as e:
+            logging.error(f"Error in _log_account_status: {str(e)}")
+            # Ensure we still update global profit even if logging fails
+            trading_state.global_profit = account_dict.get("profit", 0) if account_dict else 0
 
     def shutdown(self):
         """Perform clean shutdown of the trading bot"""
@@ -241,10 +266,20 @@ class TradingBot:
             except Exception as e:
                 logging.error(f"Error stopping trade alerts: {e}")
 
-        # Wait for trading threads to finish
-        for thread in self.threads:
-            thread.join(timeout=5)
+        # Close all hedged positions first
+        for symbol in SYMBOLS:
+            hedging_manager = self.hedging_managers[symbol]
+            if symbol in hedging_manager.hedged_positions:
+                for pos in hedging_manager.hedged_positions[symbol]:
+                    main_positions = mt5.positions_get(ticket=pos.main_ticket)
+                    hedge_positions = mt5.positions_get(ticket=pos.hedge_ticket)
 
+                    if main_positions:
+                        self.order_manager.close_position(main_positions[0])
+                    if hedge_positions:
+                        self.order_manager.close_position(hedge_positions[0])
+
+        # Close remaining regular positions
         total_profit = self._close_all_positions()
         logging.info(f"Total profit from closed positions: {total_profit}")
 

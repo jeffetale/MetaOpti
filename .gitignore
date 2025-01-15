@@ -17,3 +17,10 @@ ml_predictor.py
 models.py
 trading.py
 backtest/ml_models/
+hedging/__pycache__/
+trading/__pycache__/
+models/__pycache__/
+backtest/__pycache__/
+ml/__pycache__/
+ml/features/__pycache__/
+utils/__pycache__/

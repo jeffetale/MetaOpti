@@ -1,3 +1,5 @@
+# ml/predictor.py
+
 import tensorflow as tf
 import joblib
 import logging
@@ -34,6 +36,7 @@ class MLPredictor:
         self.return_model = None
         self.scaler = None
         self.features = None
+        self.logger = logging.getLogger(__name__)
 
         self.load_models()
 
@@ -103,6 +106,64 @@ class MLPredictor:
         except Exception as e:
             logging.error(f"Error loading models for {self.symbol}: {str(e)}")
             raise
+
+    def get_directional_confidence(self) -> Tuple[float, float]:
+        """
+        Get buy and sell confidence scores.
+        Returns: Tuple of (buy_confidence, sell_confidence)
+        """
+        try:
+            # Get prediction using existing predict method
+            signal, confidence, predicted_return = self.predict()
+
+            # Transform the confidence into buy/sell probabilities
+            if signal == "buy":
+                buy_confidence = confidence
+                sell_confidence = 1 - confidence
+            elif signal == "sell":
+                buy_confidence = 1 - confidence
+                sell_confidence = confidence
+            else:
+                buy_confidence = sell_confidence = 0.5
+
+            # Adjust confidences based on predicted return
+            if abs(predicted_return) > 0.001:  # Significant predicted return
+                if predicted_return > 0:
+                    buy_confidence *= 1 + abs(predicted_return) * 10
+                    sell_confidence *= 1 - abs(predicted_return) * 5
+                else:
+                    sell_confidence *= 1 + abs(predicted_return) * 10
+                    buy_confidence *= 1 - abs(predicted_return) * 5
+
+            # Normalize confidences to sum to 1
+            total = buy_confidence + sell_confidence
+            buy_confidence /= total
+            sell_confidence /= total
+
+            self.logger.info(
+                f"Directional confidence for {self.symbol}: Buy={buy_confidence:.3f}, Sell={sell_confidence:.3f}"
+            )
+            return buy_confidence, sell_confidence
+
+        except Exception as e:
+            self.logger.error(f"Error getting directional confidence: {str(e)}")
+            return 0.5, 0.5
+
+    def get_position_sizing(
+        self, base_volume: float, buy_confidence: float, sell_confidence: float
+    ) -> Tuple[float, float]:
+        """Calculate position sizes for hedged positions based on confidence levels."""
+        confidence_diff = abs(buy_confidence - sell_confidence)
+
+        # Higher confidence gets larger position
+        if buy_confidence > sell_confidence:
+            buy_volume = base_volume * (1 + confidence_diff)
+            sell_volume = base_volume
+        else:
+            buy_volume = base_volume
+            sell_volume = base_volume * (1 + confidence_diff)
+
+        return round(buy_volume, 2), round(sell_volume, 2)
 
     def _predict_direction(self, scaled_features):
         """Dedicated method for direction prediction"""
