@@ -31,7 +31,9 @@
 #      "EURUSD",
 #  ]
 
-SYMBOLS = ["XAUUSD", "BTCUSD"]
+# SYMBOLS = ["XAUUSD", "BTCUSD"]
+
+SYMBOLS = ["ETHUSD", "BTCUSD"]
 
 BACKTEST_SYMBOLS = [
     "EURUSD"

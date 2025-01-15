@@ -5,7 +5,9 @@ from datetime import datetime
 import logging
 from typing import Dict, List, Optional
 from config import mt5
+from logging_config import setup_comprehensive_logging
 
+setup_comprehensive_logging()
 
 @dataclass
 class HedgedPosition:
@@ -19,6 +21,8 @@ class HedgedPosition:
     entry_time: datetime
     trailing_stop: Optional[float] = None
     trailing_activation_price: Optional[float] = None
+    profit_target_hit: bool = False
+    increased_position: bool = False
 
 
 class HedgingManager:
@@ -30,17 +34,19 @@ class HedgingManager:
         self.MAX_POSITIONS = 8
         self.TRAILING_ACTIVATION_PERCENT = 0.5  # Activate trailing after 0.5% profit
         self.TRAILING_STOP_PERCENT = 0.3  # Trailing stop at 0.3% below peak
+        self.PROFIT_TARGET = 20.0  # USD profit target to trigger strategy adjustment
+        self.POSITION_INCREASE_FACTOR = 1.5  # Factor to increase position size
+        self.MAX_LOSS_PER_PAIR = -30.0  # Maximum loss allowed per hedged pair
+        self.TRAILING_ACTIVATION_PERCENT = 0.5
+        self.TRAILING_STOP_PERCENT = 0.3
 
     def manage_hedged_positions(self, symbol: str) -> None:
-        """Main method to manage hedged positions for a symbol"""
         if symbol not in self.hedged_positions:
             self.hedged_positions[symbol] = []
 
-        # Check if we can open new positions
         if len(self.hedged_positions[symbol]) < self.MAX_POSITIONS:
             self._try_open_hedged_position(symbol)
 
-        # Manage existing positions
         self._manage_existing_positions(symbol)
 
     def _try_open_hedged_position(self, symbol: str) -> None:
@@ -160,28 +166,65 @@ class HedgingManager:
             symbol=symbol, direction=direction, volume=volume, sl=sl, tp=tp
         )
 
+    def _handle_profit_target_reached(self, hedged_pos, main_pos, hedge_pos, symbol):
+        """Handle strategy when profit target is reached"""
+        # Determine which position is profitable
+        profitable_pos = main_pos if (main_pos and main_pos.profit > 0) else hedge_pos
+        losing_pos = hedge_pos if profitable_pos == main_pos else main_pos
+
+        if profitable_pos and losing_pos:
+            # Close losing position
+            self.order_manager.close_position(losing_pos)
+
+            # Calculate new position size with increased volume
+            new_volume = profitable_pos.volume * self.POSITION_INCREASE_FACTOR
+
+            # Open new position in same direction as profitable position with increased size
+            direction = "buy" if profitable_pos.type == mt5.ORDER_TYPE_BUY else "sell"
+            atr = self._calculate_atr(symbol)
+
+            if atr:
+                self.order_manager.place_hedged_order(
+                    symbol=symbol, direction=direction, volume=new_volume, atr=atr
+                )
+
+            hedged_pos.profit_target_hit = True
+            hedged_pos.increased_position = True
+            hedged_pos.current_phase = "TRAILING"
+
     def _manage_existing_positions(self, symbol: str) -> None:
-        """Manage existing hedged positions with improved trailing stop logic"""
         positions_to_remove = []
 
         for hedged_pos in self.hedged_positions[symbol]:
             main_pos = mt5.positions_get(ticket=hedged_pos.main_ticket)
             hedge_pos = mt5.positions_get(ticket=hedged_pos.hedge_ticket)
 
-            # Get the actual position objects if they exist
             main_pos = main_pos[0] if main_pos else None
             hedge_pos = hedge_pos[0] if hedge_pos else None
 
-            if not main_pos or not hedge_pos:
-                # One position closed, manage the remaining one
-                surviving_pos = main_pos if main_pos else hedge_pos
+            # Calculate total profit of the pair
+            total_profit = self._calculate_pair_profit(main_pos, hedge_pos)
 
+            # Handle profit target reached
+            if total_profit >= self.PROFIT_TARGET and not hedged_pos.profit_target_hit:
+                self._handle_profit_target_reached(
+                    hedged_pos, main_pos, hedge_pos, symbol
+                )
+                continue
+
+            # Handle maximum loss exceeded
+            if total_profit <= self.MAX_LOSS_PER_PAIR:
+                self._handle_max_loss_exceeded(hedged_pos, main_pos, hedge_pos)
+                positions_to_remove.append(hedged_pos)
+                continue
+
+            # Regular position management
+            if not main_pos or not hedge_pos:
+                surviving_pos = main_pos if main_pos else hedge_pos
                 if surviving_pos:
                     if hedged_pos.current_phase == "HEDGED":
-                        # Convert to trailing stop mode
                         self._convert_to_trailing_stop(surviving_pos, hedged_pos)
                     elif hedged_pos.current_phase == "TRAILING":
-                        # Update trailing stop
                         self._update_trailing_stop(surviving_pos, hedged_pos)
                 else:
                     positions_to_remove.append(hedged_pos)
@@ -263,6 +306,23 @@ class HedgingManager:
             "tp": new_tp,
         }
         mt5.order_send(request)
+
+    def _calculate_pair_profit(self, main_pos, hedge_pos):
+        """Calculate total profit for a pair of positions"""
+        main_profit = main_pos.profit if main_pos else 0
+        hedge_profit = hedge_pos.profit if hedge_pos else 0
+        return main_profit + hedge_profit
+
+    def _handle_max_loss_exceeded(self, hedged_pos, main_pos, hedge_pos):
+        """Handle strategy when maximum loss is exceeded"""
+        if main_pos:
+            self.order_manager.close_position(main_pos)
+        if hedge_pos:
+            self.order_manager.close_position(hedge_pos)
+
+        # Update risk parameters temporarily for this symbol
+        self.MAX_POSITIONS -= 1  # Reduce max positions temporarily
+        self.PROFIT_TARGET *= 0.8  # Lower profit target temporarily
 
     def _calculate_atr(self, symbol: str, period: int = 14) -> Optional[float]:
         """Calculate Average True Range for dynamic stop levels"""
