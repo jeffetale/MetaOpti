@@ -50,12 +50,12 @@ class HedgingManager:
         self.MAX_POSITIONS = 10
         self.BASE_TRAILING_ACTIVATION = 0.5  # Activate trailing stop after 0.5 % profit
         self.BASE_TRAILING_STOP = 0.3
-        self.BASE_PROFIT_TARGET = 20.0
+        self.BASE_PROFIT_TARGET = 10.0
         self.POSITION_INCREASE_FACTOR = 1.5
-        self.MAX_LOSS_PER_PAIR = -40.0
+        self.MAX_LOSS_PER_PAIR = -5.0
         self.MAX_WINNING_STREAK_FACTOR = 2.5
         self.VOLATILITY_ADJUSTMENT_FACTOR = 1.2
-        self.MIN_CONFIDENCE_THRESHOLD = 0.55
+        self.MIN_CONFIDENCE_THRESHOLD = 0.57
 
         # Performance tracking
         self.winning_trades = 0
@@ -267,42 +267,46 @@ class HedgingManager:
         )
 
     def _manage_existing_positions(self, symbol: str) -> None:
+        """Position management with recovery strategies"""
         positions_to_remove = []
-
+        
         for hedged_pos in self.hedged_positions[symbol]:
             main_pos = mt5.positions_get(ticket=hedged_pos.main_ticket)
             hedge_pos = mt5.positions_get(ticket=hedged_pos.hedge_ticket)
-
+            
             main_pos = main_pos[0] if main_pos else None
             hedge_pos = hedge_pos[0] if hedge_pos else None
-
+            
             # Calculate total profit of the pair
             total_profit = self._calculate_pair_profit(main_pos, hedge_pos)
-
-            # Handle profit target reached
-            if total_profit >= self.BASE_PROFIT_TARGET and not hedged_pos.profit_target_hit:
-                self._handle_profit_target_reached(
-                    hedged_pos, main_pos, hedge_pos, symbol
-                )
-                continue
-
+            
+            # Handle cases where one position is closed
+            if bool(main_pos) != bool(hedge_pos):  # XOR - one position exists, other doesn't
+                surviving_pos = main_pos if main_pos else hedge_pos
+                closed_pos = hedge_pos if main_pos else main_pos
+                
+                if not hasattr(hedged_pos, 'recovery_in_progress'):
+                    hedged_pos.recovery_in_progress = True
+                    success = self._handle_stopped_position(hedged_pos, surviving_pos, closed_pos, symbol)
+                    if not success:
+                        positions_to_remove.append(hedged_pos)
+                    continue
+            
             # Handle maximum loss exceeded
             if total_profit <= self.MAX_LOSS_PER_PAIR:
-                self._handle_max_loss_exceeded(hedged_pos, main_pos, hedge_pos)
+                self._handle_max_loss_exceeded(hedged_pos, main_pos, hedge_pos, symbol)
                 positions_to_remove.append(hedged_pos)
                 continue
-
+                
+            # Handle profit target reached
+            if total_profit >= self.BASE_PROFIT_TARGET and not hedged_pos.profit_target_hit:
+                self._handle_profit_target_reached(hedged_pos, main_pos, hedge_pos, symbol)
+                continue
+                
             # Regular position management
-            if not main_pos or not hedge_pos:
-                surviving_pos = main_pos if main_pos else hedge_pos
-                if surviving_pos:
-                    if hedged_pos.current_phase == "HEDGED":
-                        self._convert_to_trailing_stop(surviving_pos, hedged_pos)
-                    elif hedged_pos.current_phase == "TRAILING":
-                        self._update_trailing_stop(surviving_pos, hedged_pos)
-                else:
-                    positions_to_remove.append(hedged_pos)
-
+            if not main_pos and not hedge_pos:
+                positions_to_remove.append(hedged_pos)
+                
         # Clean up closed positions
         for pos in positions_to_remove:
             self.hedged_positions[symbol].remove(pos)
@@ -313,16 +317,54 @@ class HedgingManager:
         hedge_profit = hedge_pos.profit if hedge_pos else 0
         return main_profit + hedge_profit
 
-    def _handle_max_loss_exceeded(self, hedged_pos, main_pos, hedge_pos):
-        """Handle strategy when maximum loss is exceeded"""
-        if main_pos:
-            self.order_manager.close_position(main_pos)
-        if hedge_pos:
-            self.order_manager.close_position(hedge_pos)
-
-        # Update risk parameters temporarily for this symbol
-        self.MAX_POSITIONS -= 1  # Reduce max positions temporarily
-        self.PROFIT_TARGET *= 0.8  # Lower profit target temporarily
+    def _handle_max_loss_exceeded(self, hedged_pos, main_pos, hedge_pos, symbol: str):
+        """Enhanced handling of maximum loss situations with recovery strategy"""
+        try:
+            # Determine which position is losing more
+            main_profit = main_pos.profit if main_pos else 0
+            hedge_profit = hedge_pos.profit if hedge_pos else 0
+            
+            losing_pos = main_pos if main_profit < hedge_profit else hedge_pos
+            winning_pos = hedge_pos if main_profit < hedge_profit else main_pos
+            
+            # Close the losing position
+            if losing_pos:
+                self.order_manager.close_position(losing_pos)
+                
+            # Get market context for new positions
+            market_context = self._get_market_context(symbol)
+            
+            # Calculate recovery parameters
+            loss_amount = abs(losing_pos.profit)
+            point = mt5.symbol_info(symbol).point
+            recovery_pips = loss_amount / (losing_pos.volume * point)
+            
+            # Open new position in winning direction with increased volume
+            winning_direction = "buy" if winning_pos.type == mt5.ORDER_TYPE_BUY else "sell"
+            recovery_volume = winning_pos.volume * 2  # Double the volume for faster recovery
+            
+            # Calculate tight stop loss
+            atr = self._calculate_atr(symbol)
+            tight_sl_distance = atr * 0.25 if atr else None  # Very tight SL
+            
+            # Place recovery order
+            recovery_result = self.order_manager.place_hedged_order(
+                symbol=symbol,
+                direction=winning_direction,
+                volume=recovery_volume,
+                sl_distance=tight_sl_distance,
+                tp_distance=recovery_pips * 1.3,  # Set TP to recover losses plus 30%
+                market_context=market_context
+            )
+            
+            if recovery_result:
+                self.logger.info(f"Placed loss recovery order: {recovery_result.order}")
+                
+            # Update risk parameters
+            self._update_risk_parameters(symbol, False, market_context)
+            
+        except Exception as e:
+            self.logger.error(f"Error in _handle_max_loss_exceeded: {str(e)}", exc_info=True)
 
     def _handle_profit_target_reached(
         self, hedged_pos, main_pos, hedge_pos, symbol, market_context
@@ -392,6 +434,57 @@ class HedgingManager:
             if direction == "buy"
             else entry_price - activation_move
         )
+        
+    def _handle_stopped_position(self, hedged_pos, surviving_pos, closed_pos, symbol: str):
+        """Handle recovery strategy when one position of a hedged pair gets stopped out"""
+        try:
+            # Calculate the loss from the closed position
+            loss_amount = abs(closed_pos.profit)
+            
+            # Get current market context
+            market_context = self._get_market_context(symbol)
+            
+            # Calculate required pip value to recover loss
+            point = mt5.symbol_info(symbol).point
+            pip_value = loss_amount / (surviving_pos.volume * point)
+            
+            # Adjust surviving position's take profit to recover losses
+            new_tp = None
+            if surviving_pos.type == mt5.ORDER_TYPE_BUY:
+                new_tp = surviving_pos.price_open + (pip_value * point * 1.2)  # Add 20% buffer
+            else:
+                new_tp = surviving_pos.price_open - (pip_value * point * 1.2)
+                
+            # Modify surviving position
+            self._modify_sl_tp(surviving_pos, surviving_pos.sl, new_tp)
+            
+            # Open recovery position in profitable direction
+            recovery_volume = surviving_pos.volume * 1.5  # Increase volume for faster recovery
+            recovery_direction = "buy" if surviving_pos.type == mt5.ORDER_TYPE_BUY else "sell"
+            
+            # Calculate tight stop loss (using 1/3 of normal ATR)
+            atr = self._calculate_atr(symbol)
+            tight_sl_distance = atr * 0.33 if atr else None
+            
+            # Place recovery order with tight SL and higher TP
+            recovery_result = self.order_manager.place_hedged_order(
+                symbol=symbol,
+                direction=recovery_direction,
+                volume=recovery_volume,
+                sl_distance=tight_sl_distance,
+                tp_distance=pip_value * 1.5,  # Set higher TP for additional profit
+                market_context=market_context
+            )
+            
+            if recovery_result:
+                self.logger.info(f"Placed recovery order: {recovery_result.order}")
+                hedged_pos.recovery_ticket = recovery_result.order
+                
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error in _handle_stopped_position: {str(e)}", exc_info=True)
+            return False
 
     def _convert_to_trailing_stop(
         self, position, hedged_position: HedgedPosition

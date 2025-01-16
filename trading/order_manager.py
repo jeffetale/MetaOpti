@@ -410,7 +410,7 @@ class OrderManager:
 
         return False
 
-    def place_hedged_order(self, symbol: str, direction: str, volume: float, atr: float) -> object:
+    def place_hedged_order(self, symbol: str, direction: str, volume: float, atr: float, sl_distance: float = None, tp_distance: float = None, market_context: dict = None) -> object:
         try:
             self.logger.info(f"Attempting to place order - Symbol: {symbol}, Direction: {direction}, Volume: {volume}")
             
@@ -429,9 +429,9 @@ class OrderManager:
             # Calculate entry price
             entry_price = tick.ask if direction == "buy" else tick.bid
             
-            # Calculate SL/TP
-            sl_distance = atr * TRADING_CONFIG.SL_ATR_MULTIPLIER
-            tp_distance = atr * TRADING_CONFIG.TP_ATR_MULTIPLIER
+            # Use provided distances or calculate from ATR
+            sl_distance = sl_distance if sl_distance is not None else atr * TRADING_CONFIG.SL_ATR_MULTIPLIER
+            tp_distance = tp_distance if tp_distance is not None else atr * TRADING_CONFIG.TP_ATR_MULTIPLIER
             
             self.logger.info(f"Calculated levels - SL Distance: {sl_distance}, TP Distance: {tp_distance}")
             
