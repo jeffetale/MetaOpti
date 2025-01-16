@@ -267,7 +267,6 @@ class HedgingManager:
         )
 
     def _manage_existing_positions(self, symbol: str) -> None:
-        """Position management with recovery strategies"""
         positions_to_remove = []
         
         for hedged_pos in self.hedged_positions[symbol]:
@@ -277,20 +276,39 @@ class HedgingManager:
             main_pos = main_pos[0] if main_pos else None
             hedge_pos = hedge_pos[0] if hedge_pos else None
             
+            # Check for 30% gain on either position
+            if main_pos and (main_pos.profit / (main_pos.price_open * main_pos.volume) >= 0.3):
+                self._apply_trailing_stop(main_pos, 20)  # 20 pip trailing stop
+                
+            if hedge_pos and (hedge_pos.profit / (hedge_pos.price_open * hedge_pos.volume) >= 0.3):
+                self._apply_trailing_stop(hedge_pos, 20)  # 20 pip trailing stop
+                
             # Calculate total profit of the pair
             total_profit = self._calculate_pair_profit(main_pos, hedge_pos)
             
             # Handle cases where one position is closed
             if bool(main_pos) != bool(hedge_pos):  # XOR - one position exists, other doesn't
                 surviving_pos = main_pos if main_pos else hedge_pos
-                closed_pos = hedge_pos if main_pos else main_pos
                 
-                if not hasattr(hedged_pos, 'recovery_in_progress'):
-                    hedged_pos.recovery_in_progress = True
-                    success = self._handle_stopped_position(hedged_pos, surviving_pos, closed_pos, symbol)
-                    if not success:
-                        positions_to_remove.append(hedged_pos)
-                    continue
+                if surviving_pos and surviving_pos.profit > 0:
+                    # Calculate new position size (increase by 50%)
+                    new_volume = surviving_pos.volume * 1.5
+                    
+                    # Get current market context
+                    market_context = self._get_market_context(symbol)
+                    
+                    # Open new position with increased size
+                    direction = "buy" if surviving_pos.type == mt5.ORDER_TYPE_BUY else "sell"
+                    self.order_manager.place_hedged_order(
+                        symbol=symbol,
+                        direction=direction,
+                        volume=new_volume,
+                        atr=self._calculate_atr(symbol),
+                        market_context=market_context
+                    )
+                
+                positions_to_remove.append(hedged_pos)
+                continue
             
             # Handle maximum loss exceeded
             if total_profit <= self.MAX_LOSS_PER_PAIR:
@@ -310,6 +328,26 @@ class HedgingManager:
         # Clean up closed positions
         for pos in positions_to_remove:
             self.hedged_positions[symbol].remove(pos)
+            
+    def _apply_trailing_stop(self, position, pip_distance: float) -> None:
+        """Apply trailing stop to a position"""
+        try:
+            point = mt5.symbol_info(position.symbol).point
+            pip_value = pip_distance * 10 * point  # Convert pips to price
+            
+            current_price = mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask
+            
+            if position.type == mt5.ORDER_TYPE_BUY:
+                new_sl = current_price - pip_value
+                if position.sl is None or new_sl > position.sl:
+                    self.order_manager.modify_position_sl_tp(position.ticket, new_sl=new_sl)
+            else:
+                new_sl = current_price + pip_value
+                if position.sl is None or new_sl < position.sl:
+                    self.order_manager.modify_position_sl_tp(position.ticket, new_sl=new_sl)
+                    
+        except Exception as e:
+            self.logger.error(f"Error applying trailing stop: {str(e)}")
 
     def _calculate_pair_profit(self, main_pos, hedge_pos):
         """Calculate total profit for a pair of positions"""

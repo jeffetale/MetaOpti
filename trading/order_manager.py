@@ -233,7 +233,7 @@ class OrderManager:
             "tp": tp,
             "deviation": TRADING_CONFIG.PRICE_DEVIATION_POINTS, 
             "magic": TRADING_CONFIG.ORDER_MAGIC_NUMBER,
-            "comment": "python",
+            "comment": "single",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,
         }
@@ -473,6 +473,38 @@ class OrderManager:
         except Exception as e:
             self.logger.error(f"Error placing hedged order: {str(e)}", exc_info=True)
             return None
+
+    def modify_position_sl_tp(self, ticket: int, new_sl: float = None, new_tp: float = None) -> bool:
+        """Modify position's stop loss and/or take profit"""
+        try:
+            position = mt5.positions_get(ticket=ticket)
+            if not position:
+                self.logger.error(f"Position {ticket} not found")
+                return False
+                
+            position = position[0]
+            symbol_info = mt5.symbol_info(position.symbol)
+            
+            # Add minimal spread check to prevent too frequent modifications
+            min_spread = symbol_info.point * symbol_info.spread
+            
+            request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": ticket,
+                "sl": new_sl if new_sl is not None else 0.0,
+                "tp": new_tp if new_tp is not None else 0.0,
+            }
+            
+            # Only modify if the change is greater than the spread
+            if new_sl is not None and abs(new_sl - position.sl) <= min_spread:
+                return False
+                
+            result = mt5.order_send(request)
+            return result and result.retcode == mt5.TRADE_RETCODE_DONE
+            
+        except Exception as e:
+            self.logger.error(f"Error modifying position SL/TP: {str(e)}")
+            return False
 
     def _send_order(self, request):
         """Send order to MT5 and handle the response"""
