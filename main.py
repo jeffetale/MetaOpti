@@ -57,6 +57,13 @@ class TradingBot:
 
     def symbol_trader(self, symbol):
         """Individual symbol trading logic"""
+        logging.info(f"Checking symbol info for {symbol}")
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            logging.error(f"Symbol {symbol} not found in MT5")
+            return
+        logging.info(f"Symbol {symbol} found with properties: {symbol_info._asdict()}")
+                 
         logging.info(f"Starting trading thread for {symbol}")
 
         while not SHUTDOWN_EVENT.is_set():

@@ -3,11 +3,13 @@
 from dataclasses import dataclass
 from datetime import datetime
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+import numpy as np
 from config import mt5
 from logging_config import setup_comprehensive_logging
 
 setup_comprehensive_logging()
+
 
 @dataclass
 class HedgedPosition:
@@ -23,6 +25,17 @@ class HedgedPosition:
     trailing_activation_price: Optional[float] = None
     profit_target_hit: bool = False
     increased_position: bool = False
+    winning_streak: int = 0
+    entry_volatility: float = 0.0
+
+
+@dataclass
+class MarketContext:
+    volatility: float
+    trend_strength: float
+    recent_volume: float
+    avg_spread: float
+    market_regime: str  # 'TRENDING', 'RANGING', 'VOLATILE'
 
 
 class HedgingManager:
@@ -31,14 +44,37 @@ class HedgingManager:
         self.order_manager = order_manager
         self.ml_predictor = ml_predictor
         self.hedged_positions: Dict[str, List[HedgedPosition]] = {}
-        self.MAX_POSITIONS = 8
-        self.TRAILING_ACTIVATION_PERCENT = 0.5  # Activate trailing after 0.5% profit
-        self.TRAILING_STOP_PERCENT = 0.3  # Trailing stop at 0.3% below peak
-        self.PROFIT_TARGET = 20.0  # USD profit target to trigger strategy adjustment
-        self.POSITION_INCREASE_FACTOR = 1.5  # Factor to increase position size
-        self.MAX_LOSS_PER_PAIR = -30.0  # Maximum loss allowed per hedged pair
-        self.TRAILING_ACTIVATION_PERCENT = 0.5
-        self.TRAILING_STOP_PERCENT = 0.3
+        self.symbol_stats: Dict[str, Dict] = {}  # Track symbol-specific performance
+
+        # Dynamic configuration
+        self.MAX_POSITIONS = 10
+        self.BASE_TRAILING_ACTIVATION = 0.5  # Activate trailing stop after 0.5 % profit
+        self.BASE_TRAILING_STOP = 0.3
+        self.BASE_PROFIT_TARGET = 20.0
+        self.POSITION_INCREASE_FACTOR = 1.5
+        self.MAX_LOSS_PER_PAIR = -40.0
+        self.MAX_WINNING_STREAK_FACTOR = 2.5
+        self.VOLATILITY_ADJUSTMENT_FACTOR = 1.2
+        self.MIN_CONFIDENCE_THRESHOLD = 0.55
+
+        # Performance tracking
+        self.winning_trades = 0
+        self.total_trades = 0
+        self.current_drawdown = 0.0
+        self.max_drawdown = 0.0
+
+    def _initialize_symbol_stats(self, symbol: str) -> None:
+        """Initialize or update symbol-specific statistics"""
+        if symbol not in self.symbol_stats:
+            self.symbol_stats[symbol] = {
+                "winning_streak": 0,
+                "losing_streak": 0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "volatility_history": [],
+                "success_rate": 0.0,
+                "total_trades": 0,
+            }
 
     def manage_hedged_positions(self, symbol: str) -> None:
         if symbol not in self.hedged_positions:
@@ -49,44 +85,128 @@ class HedgingManager:
 
         self._manage_existing_positions(symbol)
 
-    def _try_open_hedged_position(self, symbol: str) -> None:
-        """Attempt to open a new hedged position pair with dynamic sizing"""
-        # Get ML directional confidence
-        buy_confidence, sell_confidence = self.ml_predictor.get_directional_confidence()
+    def _determine_market_regime(
+        self, volatility: float, trend_strength: float, volume: float
+    ) -> str:
+        """Classify current market regime"""
+        if trend_strength > 25 and volume > self.symbol_stats.get("avg_volume", 0):
+            return "TRENDING"
+        elif volatility > 1.5 * self.symbol_stats.get("avg_volatility", 0):
+            return "VOLATILE"
+        else:
+            return "RANGING"
 
-        # Only proceed if we have strong enough conviction
-        min_confidence = 0.55
-        if max(buy_confidence, sell_confidence) < min_confidence:
-            return
+    def _calculate_dynamic_profit_target(
+        self, symbol: str, market_context: MarketContext
+    ) -> float:
+        """Calculate profit target based on market conditions"""
+        base_target = self.BASE_PROFIT_TARGET
 
-        # Calculate position sizes based on confidence
-        base_volume = 0.1  # Base trading volume
-        buy_volume, sell_volume = self.ml_predictor.get_position_sizing(
-            base_volume, buy_confidence, sell_confidence
+        # Adjust for volatility
+        volatility_multiplier = (
+            market_context.volatility
+            / self.symbol_stats[symbol]["volatility_history"][-20:].mean()
         )
 
-        # Determine main and hedge positions based on confidence
-        main_direction = "buy" if buy_confidence > sell_confidence else "sell"
-        main_volume = buy_volume if main_direction == "buy" else sell_volume
-        hedge_volume = sell_volume if main_direction == "buy" else buy_volume
+        # Adjust for market regime
+        regime_multiplier = {
+            "TRENDING": 1.5,  # More room to run in trends
+            "VOLATILE": 0.8,  # Tighter targets in volatile conditions
+            "RANGING": 1.0,  # Standard targets in ranging markets
+        }.get(market_context.market_regime, 1.0)
 
-        atr = self._calculate_atr(symbol)
-        if not atr:
-            return
+        # Adjust for winning streak
+        streak_multiplier = min(
+            1 + (self.symbol_stats[symbol]["winning_streak"] * 0.1),
+            self.MAX_WINNING_STREAK_FACTOR,
+        )
 
-        # Open main position
-        main_result = self._open_main_position(symbol, main_direction, main_volume, atr)
+        return (
+            base_target * volatility_multiplier * regime_multiplier * streak_multiplier
+        )
 
-        if main_result:
-            # Get the actual position info for the main position
-            main_position = mt5.positions_get(ticket=main_result.order)
-            if not main_position:
-                self.logger.error(
-                    f"Could not get main position info after order placement"
-                )
+    def _calculate_position_size(
+        self, symbol: str, base_volume: float, confidence: float
+    ) -> float:
+        """Calculate position size based on performance and market conditions"""
+        stats = self.symbol_stats[symbol]
+
+        # Base scaling factors
+        winning_streak_factor = 1.0 + (0.1 * stats["winning_streak"])
+        success_rate_factor = (
+            1.0 + (stats["success_rate"] - 0.5) if stats["success_rate"] > 0.5 else 1.0
+        )
+
+        # Risk-based scaling
+        risk_factor = (
+            max(0.5, 1.0 - (abs(self.current_drawdown) / self.max_drawdown))
+            if self.max_drawdown != 0
+            else 1.0
+        )
+
+        # Confidence scaling
+        confidence_factor = (confidence - self.MIN_CONFIDENCE_THRESHOLD) / (
+            1 - self.MIN_CONFIDENCE_THRESHOLD
+        )
+
+        final_volume = (
+            base_volume
+            * winning_streak_factor
+            * success_rate_factor
+            * risk_factor
+            * confidence_factor
+        )
+
+        calculated_volume = super()._calculate_position_size(symbol, base_volume, confidence)
+        logging.info(f"""
+            Position size calculation for {symbol}:
+            Base volume: {base_volume}
+            Confidence: {confidence}
+            Final volume: {calculated_volume}
+            """)
+
+        return round(min(final_volume, base_volume * self.MAX_WINNING_STREAK_FACTOR), 2)
+
+    def _try_open_hedged_position(self, symbol: str) -> None:
+        try:
+            # Get ML directional confidence
+            buy_confidence, sell_confidence = self.ml_predictor.get_directional_confidence()
+            self.logger.info(f"Directional confidence - Buy: {buy_confidence}, Sell: {sell_confidence}")
+
+            # Check confidence threshold
+            min_confidence = self.MIN_CONFIDENCE_THRESHOLD
+            if max(buy_confidence, sell_confidence) < min_confidence:
+                self.logger.info(f"Insufficient confidence. Required: {min_confidence}")
                 return
 
-            main_position = main_position[0]  # Get the first position object
+            # Calculate position sizes
+            base_volume = 0.1
+            main_direction = "buy" if buy_confidence > sell_confidence else "sell"
+            main_volume = base_volume if main_direction == "buy" else base_volume
+            hedge_volume = base_volume if main_direction == "sell" else base_volume
+
+            self.logger.info(f"Calculated volumes - Main: {main_volume}, Hedge: {hedge_volume}")
+
+            # Get ATR
+            atr = self._calculate_atr(symbol)
+            self.logger.info(f"Calculated ATR: {atr}")
+            if not atr:
+                self.logger.error("ATR calculation failed")
+                return
+
+            # Open main position with error handling
+            self.logger.info(f"Attempting to open main position for {symbol}")
+            main_result = self._open_main_position(symbol, main_direction, main_volume, atr)
+
+            if main_result:
+                self.logger.info(f"Main position opened successfully: {main_result}")
+                main_position = mt5.positions_get(ticket=main_result.order)
+
+                if not main_position:
+                    self.logger.error("Could not get main position info after order placement")
+                    return
+
+                main_position = main_position[0]
 
             # Open hedge position
             hedge_result = self._open_hedge_position(
@@ -119,6 +239,10 @@ class HedgingManager:
             else:
                 # Close main position if hedge fails
                 self.order_manager.close_position(main_position)
+                self.logger.error("Failed to open main position")
+
+        except Exception as e:
+            self.logger.error(f"Error in _try_open_hedged_position: {str(e)}", exc_info=True)
 
     def _open_main_position(
         self, symbol: str, direction: str, volume: float, atr: float
@@ -142,56 +266,6 @@ class HedgingManager:
             atr=atr * 1.5,  # Using tighter ATR multiplier for hedge
         )
 
-    def _open_position(
-        self,
-        symbol: str,
-        direction: str,
-        volume: float,
-        sl_distance: float,
-        tp_distance: float,
-    ):
-        """Generic position opening with calculated levels"""
-        tick = mt5.symbol_info_tick(symbol)
-
-        entry_price = tick.ask if direction == "buy" else tick.bid
-
-        if direction == "buy":
-            sl = entry_price - sl_distance
-            tp = entry_price + tp_distance
-        else:
-            sl = entry_price + sl_distance
-            tp = entry_price - tp_distance
-
-        return self.order_manager.place_hedged_order(
-            symbol=symbol, direction=direction, volume=volume, sl=sl, tp=tp
-        )
-
-    def _handle_profit_target_reached(self, hedged_pos, main_pos, hedge_pos, symbol):
-        """Handle strategy when profit target is reached"""
-        # Determine which position is profitable
-        profitable_pos = main_pos if (main_pos and main_pos.profit > 0) else hedge_pos
-        losing_pos = hedge_pos if profitable_pos == main_pos else main_pos
-
-        if profitable_pos and losing_pos:
-            # Close losing position
-            self.order_manager.close_position(losing_pos)
-
-            # Calculate new position size with increased volume
-            new_volume = profitable_pos.volume * self.POSITION_INCREASE_FACTOR
-
-            # Open new position in same direction as profitable position with increased size
-            direction = "buy" if profitable_pos.type == mt5.ORDER_TYPE_BUY else "sell"
-            atr = self._calculate_atr(symbol)
-
-            if atr:
-                self.order_manager.place_hedged_order(
-                    symbol=symbol, direction=direction, volume=new_volume, atr=atr
-                )
-
-            hedged_pos.profit_target_hit = True
-            hedged_pos.increased_position = True
-            hedged_pos.current_phase = "TRAILING"
-
     def _manage_existing_positions(self, symbol: str) -> None:
         positions_to_remove = []
 
@@ -206,7 +280,7 @@ class HedgingManager:
             total_profit = self._calculate_pair_profit(main_pos, hedge_pos)
 
             # Handle profit target reached
-            if total_profit >= self.PROFIT_TARGET and not hedged_pos.profit_target_hit:
+            if total_profit >= self.BASE_PROFIT_TARGET and not hedged_pos.profit_target_hit:
                 self._handle_profit_target_reached(
                     hedged_pos, main_pos, hedge_pos, symbol
                 )
@@ -233,6 +307,70 @@ class HedgingManager:
         for pos in positions_to_remove:
             self.hedged_positions[symbol].remove(pos)
 
+    def _calculate_pair_profit(self, main_pos, hedge_pos):
+        """Calculate total profit for a pair of positions"""
+        main_profit = main_pos.profit if main_pos else 0
+        hedge_profit = hedge_pos.profit if hedge_pos else 0
+        return main_profit + hedge_profit
+
+    def _handle_max_loss_exceeded(self, hedged_pos, main_pos, hedge_pos):
+        """Handle strategy when maximum loss is exceeded"""
+        if main_pos:
+            self.order_manager.close_position(main_pos)
+        if hedge_pos:
+            self.order_manager.close_position(hedge_pos)
+
+        # Update risk parameters temporarily for this symbol
+        self.MAX_POSITIONS -= 1  # Reduce max positions temporarily
+        self.PROFIT_TARGET *= 0.8  # Lower profit target temporarily
+
+    def _handle_profit_target_reached(
+        self, hedged_pos, main_pos, hedge_pos, symbol, market_context
+    ):
+        """Enhanced profit target handling with sophisticated exit criteria"""
+        # Determine which position is profitable
+        profitable_pos = main_pos if (main_pos and main_pos.profit > 0) else hedge_pos
+        losing_pos = hedge_pos if profitable_pos == main_pos else main_pos
+
+        if profitable_pos and losing_pos:
+            # Update statistics
+            self.symbol_stats[symbol]["winning_streak"] += 1
+            self.winning_trades += 1
+            self.total_trades += 1
+
+            # Calculate new position size with dynamic scaling
+            base_increase = self.POSITION_INCREASE_FACTOR
+            streak_bonus = min(0.1 * self.symbol_stats[symbol]["winning_streak"], 0.5)
+            volatility_adj = max(
+                0.5, 1.0 - (market_context.volatility / hedged_pos.entry_volatility)
+            )
+
+            new_volume = (
+                profitable_pos.volume * (base_increase + streak_bonus) * volatility_adj
+            )
+
+            # Close losing position
+            self.order_manager.close_position(losing_pos)
+
+            # Open new position with improved parameters
+            direction = "buy" if profitable_pos.type == mt5.ORDER_TYPE_BUY else "sell"
+
+            if market_context.market_regime != "VOLATILE":
+                self.order_manager.place_hedged_order(
+                    symbol=symbol,
+                    direction=direction,
+                    volume=new_volume,
+                    atr=self._calculate_atr(symbol),
+                    market_context=market_context,
+                )
+
+            hedged_pos.profit_target_hit = True
+            hedged_pos.increased_position = True
+            hedged_pos.current_phase = "TRAILING"
+
+            # Update risk parameters
+            self._update_risk_parameters(symbol, True, market_context)
+
     def _calculate_trailing_activation_price(
         self, position_ticket: int, direction: str
     ) -> float:
@@ -247,7 +385,7 @@ class HedgingManager:
 
         position = position[0]  # Get the first position object
         entry_price = position.price_open
-        activation_move = entry_price * self.TRAILING_ACTIVATION_PERCENT / 100
+        activation_move = entry_price * self.BASE_TRAILING_ACTIVATION / 100
 
         return (
             entry_price + activation_move
@@ -260,7 +398,7 @@ class HedgingManager:
     ) -> None:
         """Convert position to trailing stop mode with dynamic stop calculation"""
         current_price = mt5.symbol_info_tick(position.symbol).bid
-        stop_distance = current_price * self.TRAILING_STOP_PERCENT / 100
+        stop_distance = current_price * self.BASE_TRAILING_STOP / 100
 
         if position.type == mt5.ORDER_TYPE_BUY:
             new_sl = current_price - stop_distance
@@ -283,7 +421,7 @@ class HedgingManager:
     def _update_trailing_stop(self, position, hedged_position: HedgedPosition) -> None:
         """Update trailing stop with improved risk management"""
         current_price = mt5.symbol_info_tick(position.symbol).bid
-        stop_distance = current_price * self.TRAILING_STOP_PERCENT / 100
+        stop_distance = current_price * self.BASE_TRAILING_STOP / 100
 
         if position.type == mt5.ORDER_TYPE_BUY:
             new_sl = current_price - stop_distance
@@ -296,49 +434,187 @@ class HedgingManager:
                 self._modify_sl_tp(position, new_sl, None)
                 hedged_position.trailing_stop = new_sl
 
-    def _modify_sl_tp(self, position, new_sl: float, new_tp: float) -> None:
-        """Modify position's stop loss and take profit levels"""
-        request = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "symbol": position.symbol,
-            "position": position.ticket,
-            "sl": new_sl,
-            "tp": new_tp,
-        }
-        mt5.order_send(request)
+    def _update_risk_parameters(
+        self, symbol: str, is_winning: bool, market_context: MarketContext
+    ) -> None:
+        """Update risk parameters based on performance and market conditions"""
+        stats = self.symbol_stats[symbol]
 
-    def _calculate_pair_profit(self, main_pos, hedge_pos):
-        """Calculate total profit for a pair of positions"""
-        main_profit = main_pos.profit if main_pos else 0
-        hedge_profit = hedge_pos.profit if hedge_pos else 0
-        return main_profit + hedge_profit
+        if is_winning:
+            stats["winning_streak"] += 1
+            stats["losing_streak"] = 0
+            # Gradually increase risk tolerance
+            self.MAX_POSITIONS = min(self.MAX_POSITIONS + 1, 15)
+            self.MAX_LOSS_PER_PAIR *= 1.1  # Allow slightly larger drawdown
+        else:
+            stats["losing_streak"] += 1
+            stats["winning_streak"] = 0
+            # Reduce risk exposure
+            self.MAX_POSITIONS = max(self.MAX_POSITIONS - 1, 5)
+            self.MAX_LOSS_PER_PAIR *= 0.9  # Tighten drawdown limit
 
-    def _handle_max_loss_exceeded(self, hedged_pos, main_pos, hedge_pos):
-        """Handle strategy when maximum loss is exceeded"""
-        if main_pos:
-            self.order_manager.close_position(main_pos)
-        if hedge_pos:
-            self.order_manager.close_position(hedge_pos)
+        # Update volatility history
+        stats["volatility_history"].append(market_context.volatility)
+        if len(stats["volatility_history"]) > 100:
+            stats["volatility_history"].pop(0)
 
-        # Update risk parameters temporarily for this symbol
-        self.MAX_POSITIONS -= 1  # Reduce max positions temporarily
-        self.PROFIT_TARGET *= 0.8  # Lower profit target temporarily
+        # Update success rate
+        stats["total_trades"] += 1
+        stats["success_rate"] = self.winning_trades / max(self.total_trades, 1)
+
+    def _calculate_adx(self, symbol: str, period: int = 14) -> float:
+        """Calculate Average Directional Index for trend strength with proper error handling"""
+        try:
+            # Get enough data for calculation
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, period * 2 + 1)
+            if rates is None or len(rates) < period * 2:
+                self.logger.warning(f"Insufficient data for ADX calculation for {symbol}")
+                return 0.0
+
+            # Convert to numpy arrays
+            high = np.array([rate['high'] for rate in rates])
+            low = np.array([rate['low'] for rate in rates])
+            close = np.array([rate['close'] for rate in rates])
+
+            # Ensure arrays are the correct length
+            high = high[:-1]  # Remove last element to match length after differentiation
+            low = low[:-1]
+            close = close[:-1]
+
+            # Calculate True Range
+            tr = np.zeros(len(high))
+            for i in range(1, len(high)):
+                hl = high[i] - low[i]
+                hc = abs(high[i] - close[i-1])
+                lc = abs(low[i] - close[i-1])
+                tr[i] = max(hl, hc, lc)
+
+            # Calculate Directional Movement
+            plus_dm = np.zeros(len(high))
+            minus_dm = np.zeros(len(high))
+
+            for i in range(1, len(high)):
+                up_move = high[i] - high[i-1]
+                down_move = low[i-1] - low[i]
+
+                if up_move > down_move and up_move > 0:
+                    plus_dm[i] = up_move
+                else:
+                    plus_dm[i] = 0
+
+                if down_move > up_move and down_move > 0:
+                    minus_dm[i] = down_move
+                else:
+                    minus_dm[i] = 0
+
+            # Calculate smoothed averages
+            tr_period = tr[-period:].mean()
+            plus_period = plus_dm[-period:].mean()
+            minus_period = minus_dm[-period:].mean()
+
+            # Avoid division by zero
+            if tr_period == 0:
+                return 0.0
+
+            # Calculate DI+ and DI-
+            plus_di = (plus_period / tr_period) * 100
+            minus_di = (minus_period / tr_period) * 100
+
+            # Calculate DX and ADX
+            dx = 0.0
+            if (plus_di + minus_di) != 0:
+                dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+
+            return float(dx)
+
+        except Exception as e:
+            self.logger.error(f"Error calculating ADX for {symbol}: {str(e)}")
+            return 0.0
 
     def _calculate_atr(self, symbol: str, period: int = 14) -> Optional[float]:
-        """Calculate Average True Range for dynamic stop levels"""
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, period + 1)
-        if rates is None:
+        """Calculate Average True Range with proper error handling"""
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, period + 1)
+            if rates is None or len(rates) < period + 1:
+                self.logger.warning(f"Insufficient data for ATR calculation for {symbol}")
+                return None
+
+            # Convert to numpy arrays
+            high = np.array([rate['high'] for rate in rates])
+            low = np.array([rate['low'] for rate in rates])
+            close = np.array([rate['close'] for rate in rates])
+
+            # Calculate true range
+            tr = np.zeros(len(high))
+            for i in range(1, len(tr)):
+                hl = high[i] - low[i]
+                hc = abs(high[i] - close[i-1])
+                lc = abs(low[i] - close[i-1])
+                tr[i] = max(hl, hc, lc)
+
+            # Calculate ATR
+            atr = tr[1:].mean()  # Exclude the first zero value
+
+            return float(atr)
+
+        except Exception as e:
+            self.logger.error(f"Error calculating ATR for {symbol}: {str(e)}")
             return None
 
-        import numpy as np
+    def _get_market_context(self, symbol: str) -> MarketContext:
+        """Analyze current market conditions with proper error handling"""
+        try:
+            # Calculate recent volatility
+            atr = self._calculate_atr(symbol)
+            current_tick = mt5.symbol_info_tick(symbol)
 
-        high = rates["high"]
-        low = rates["low"]
-        close = np.roll(rates["close"], 1)
+            if atr is None or current_tick is None:
+                self.logger.warning(f"Unable to get market context for {symbol}")
+                return MarketContext(
+                    volatility=0.0,
+                    trend_strength=0.0,
+                    recent_volume=0.0,
+                    avg_spread=0.0,
+                    market_regime="RANGING"  # Default to ranging when data is insufficient
+                )
 
-        tr1 = np.abs(high - low)
-        tr2 = np.abs(high - close)
-        tr3 = np.abs(low - close)
+            volatility = atr / current_tick.bid if current_tick.bid != 0 else 0.0
 
-        tr = np.maximum(tr1, np.maximum(tr2, tr3))
-        return float(np.mean(tr))
+            # Calculate trend strength using ADX
+            adx = self._calculate_adx(symbol)
+
+            # Get recent volume with error handling
+            try:
+                volume_data = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 20)
+                recent_volume = float(np.mean([rate['tick_volume'] for rate in volume_data])) if volume_data is not None else 0.0
+            except Exception as e:
+                self.logger.warning(f"Error calculating recent volume: {str(e)}")
+                recent_volume = 0.0
+
+            # Calculate average spread
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                avg_spread = 0.0
+            else:
+                avg_spread = symbol_info.spread * symbol_info.point
+
+            # Determine market regime with safe defaults
+            market_regime = self._determine_market_regime(volatility, adx, recent_volume)
+
+            return MarketContext(
+                volatility=volatility,
+                trend_strength=adx,
+                recent_volume=recent_volume,
+                avg_spread=avg_spread,
+                market_regime=market_regime
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error getting market context for {symbol}: {str(e)}")
+            return MarketContext(
+                volatility=0.0,
+                trend_strength=0.0,
+                recent_volume=0.0,
+                avg_spread=0.0,
+                market_regime="RANGING"
+            )

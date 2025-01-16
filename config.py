@@ -51,7 +51,7 @@ class MT5Config:
     SERVER = os.getenv("SERVER")
     ACCOUNT_NUMBER = int(os.getenv("LOGIN"))
     # TIMEFRAME = mt5.TIMEFRAME_M15
-    TIMEFRAME = MetaTrader5.TIMEFRAME_M5
+    TIMEFRAME = MetaTrader5.TIMEFRAME_M1
 
 
 # Trading Parameters Configuration
@@ -93,8 +93,8 @@ class TradingConfig:
     NEUTRAL_CONFIDENCE_THRESHOLD: float = 0.4
     HIGH_CONFIDENCE_THRESHOLD: float = 0.6
     MIN_PREDICTED_RETURN: float = 0.001
-    MODEL_PREDICTION_LOOKBACK_PERIODS: int = 55
-    MODEL_TRAINING_LOOKBACK_PERIOD: int = 1000
+    MODEL_PREDICTION_LOOKBACK_PERIODS: int = 100
+    MODEL_TRAINING_LOOKBACK_PERIOD: int = 2000
 
     # Trade Direction Memory
     TRADE_DIRECTION_MEMORY_SIZE: int = 5

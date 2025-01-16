@@ -410,59 +410,69 @@ class OrderManager:
 
         return False
 
-    def place_hedged_order(
-        self, symbol: str, direction: str, volume: float, atr: float
-    ) -> object:
-        """Place a hedged order with calculated SL/TP levels"""
-        symbol_info = mt5.symbol_info(symbol)
-        if not self._validate_symbol_info(symbol_info, symbol):
+    def place_hedged_order(self, symbol: str, direction: str, volume: float, atr: float) -> object:
+        try:
+            self.logger.info(f"Attempting to place order - Symbol: {symbol}, Direction: {direction}, Volume: {volume}")
+            
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                self.logger.error(f"Symbol info not found for {symbol}")
+                return None
+                
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                self.logger.error(f"Tick info not found for {symbol}")
+                return None
+                
+            self.logger.info(f"Current tick - Bid: {tick.bid}, Ask: {tick.ask}")
+            
+            # Calculate entry price
+            entry_price = tick.ask if direction == "buy" else tick.bid
+            
+            # Calculate SL/TP
+            sl_distance = atr * TRADING_CONFIG.SL_ATR_MULTIPLIER
+            tp_distance = atr * TRADING_CONFIG.TP_ATR_MULTIPLIER
+            
+            self.logger.info(f"Calculated levels - SL Distance: {sl_distance}, TP Distance: {tp_distance}")
+            
+            if direction == "buy":
+                sl = entry_price - sl_distance
+                tp = entry_price + tp_distance
+            else:
+                sl = entry_price + sl_distance
+                tp = entry_price - tp_distance
+                
+            self.logger.info(f"Final levels - Entry: {entry_price}, SL: {sl}, TP: {tp}")
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
+                "price": entry_price,
+                "sl": sl,
+                "tp": tp,
+                "deviation": TRADING_CONFIG.PRICE_DEVIATION_POINTS,
+                "magic": TRADING_CONFIG.ORDER_MAGIC_NUMBER,
+                "comment": "hedged",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            self.logger.info(f"Sending order request: {request}")
+            result = mt5.order_send(request)
+            self.logger.info(f"Order result: {result}")
+            
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"Order placed successfully")
+                return result
+                
+            self.logger.error(f"Order failed with retcode: {result.retcode if result else 'No result'}")
             return None
-
-        tick = mt5.symbol_info_tick(symbol)
-        if not self._validate_tick_info(tick, symbol):
+            
+        except Exception as e:
+            self.logger.error(f"Error placing hedged order: {str(e)}", exc_info=True)
             return None
-
-        # Calculate entry price
-        entry_price = tick.ask if direction == "buy" else tick.bid
-
-        # Calculate SL/TP distances based on ATR
-        sl_distance = atr * TRADING_CONFIG.SL_ATR_MULTIPLIER
-        tp_distance = atr * TRADING_CONFIG.TP_ATR_MULTIPLIER
-
-        # Calculate SL/TP levels
-        if direction == "buy":
-            sl = entry_price - sl_distance
-            tp = entry_price + tp_distance
-        else:
-            sl = entry_price + sl_distance
-            tp = entry_price - tp_distance
-
-        # Get valid filling mode
-        filling_mode = self._get_valid_filling_mode(symbol)
-        if not filling_mode:
-            return None
-
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": volume,
-            "type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
-            "price": entry_price,
-            "sl": sl,
-            "tp": tp,
-            "deviation": TRADING_CONFIG.PRICE_DEVIATION_POINTS,
-            "magic": TRADING_CONFIG.ORDER_MAGIC_NUMBER,
-            "comment": "hedged",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_mode,
-        }
-
-        result = mt5.order_send(request)
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            self.logger.info(f"Successfully placed hedged order for {symbol}")
-            return result
-
-        return None
 
     def _send_order(self, request):
         """Send order to MT5 and handle the response"""
