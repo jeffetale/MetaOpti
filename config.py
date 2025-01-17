@@ -22,7 +22,7 @@ load_dotenv()
 ROOT_DIR = Path(__file__).resolve().parent
 
 # All project paths relative to ROOT_DIR
-SOUNDS_DIR = ROOT_DIR / "sounds"
+SOUNDS_DIR = ROOT_DIR / "utils" / "sounds"
 MODEL_SAVE_DIR= ROOT_DIR / "ml" / "ml_models"
 BACKTEST_MODEL_SAVE_DIR = ROOT_DIR / "backtest" / "ml_models"
 

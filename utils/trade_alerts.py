@@ -1,4 +1,4 @@
-# trade_alerts.py
+# utils/trade_alerts.py
 
 import threading
 import time

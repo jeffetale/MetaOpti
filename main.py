@@ -23,14 +23,18 @@ from trading.risk_manager import RiskManager
 from ml.predictor import MLPredictor
 from ml.background_train import BackgroundTrainer
 from utils.market_utils import ensure_mt5_initialized
-from trade_alerts import TradeAlerts
+from utils.trade_alerts import TradeAlerts
 from hedging.hedging_manager import HedgingManager
+from utils.keyboard_controller import KeyboardController
+from api.server import WebInterface
 
 setup_comprehensive_logging()
 
 
 class TradingBot:
-    def __init__(self):
+
+    def __init__(self, use_web_interface=False):  
+        self.use_web_interface = use_web_interface 
         self.trading_stats = None
         self.initial_balance = None
         self.threads = []
@@ -63,7 +67,7 @@ class TradingBot:
             logging.error(f"Symbol {symbol} not found in MT5")
             return
         logging.info(f"Symbol {symbol} found with properties: {symbol_info._asdict()}")
-                 
+
         logging.info(f"Starting trading thread for {symbol}")
 
         while not SHUTDOWN_EVENT.is_set():
@@ -153,9 +157,14 @@ class TradingBot:
             logging.info("Trade alerts system initialized successfully")
         except Exception as e:
             logging.error(f"Failed to initialize trade alerts: {e}")
-            # Continue without alerts if they fail to initialize
             self.alerts = None
 
+        if self.use_web_interface:
+            self.web_interface = WebInterface(self)
+            threading.Thread(target=self.web_interface.start, daemon=True).start()
+
+        self.keyboard_controller = KeyboardController(self)
+        self.keyboard_controller.start()
         self.trading_stats = TradingStatistics(SYMBOLS)
         return True
 
@@ -233,7 +242,7 @@ class TradingBot:
                 for state in trading_state.symbol_states.values()
                 if hasattr(state, 'win_rate') and state.win_rate is not None
             ]
-            
+
             avg_win_rate = statistics.mean(win_rates) if win_rates else 0.0
 
             logging.info(
@@ -253,7 +262,7 @@ class TradingBot:
             )
 
             trading_state.global_profit = total_profit
-            
+
         except Exception as e:
             logging.error(f"Error in _log_account_status: {str(e)}")
             # Ensure we still update global profit even if logging fails
@@ -298,7 +307,9 @@ class TradingBot:
         session_number = get_next_session_number()
         log_session_end(session_number)
 
-        mt5.shutdown()
+        self.keyboard_controller.stop()
+        mt5.shutdown()   
+
         logging.info("MT5 connection closed")
         logging.info("Trading bot shutdown complete")
 
@@ -359,8 +370,10 @@ def main():
             logging.error("Failed to initialize models - cannot start bot")
             return
 
-        # Initialize the trading bot
-        bot = TradingBot()
+        # Initialize the trading bot with web interface flag
+        bot = TradingBot(
+            use_web_interface=False
+        )  # Set to True if you want web interface
 
         # Start background training
         background_trainer.start()

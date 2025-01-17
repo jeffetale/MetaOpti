@@ -1,6 +1,6 @@
 # symbols.py
 
-# Trading and training Symbols
+# Trading and training Symbols. Backtest Symbols as well
 # SYMBOLS = [
 #    "XAUUSD",
 #    "XTIUSD",]
@@ -31,8 +31,8 @@
 #      "EURUSD",
 #  ]
 
-SYMBOLS = ["XAUUSD", "BTCUSD"]
-
+SYMBOLS = ["BTCUSD"]
+# SYMBOLS = ["XAUUSD", "BTCUSD"]
 #SYMBOLS = ["ETHUSD", "BTCUSD"]
 
 BACKTEST_SYMBOLS = [
