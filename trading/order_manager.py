@@ -461,7 +461,6 @@ class OrderManager:
             
             self.logger.info(f"Sending order request: {request}")
             result = mt5.order_send(request)
-            self.logger.info(f"Order result: {result}")
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.logger.info(f"Order placed successfully")
