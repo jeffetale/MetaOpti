@@ -49,6 +49,8 @@ class HedgingManager:
         self.symbol_stats: Dict[str, Dict] = {}  # Track symbol-specific performance
 
         # Dynamic configuration
+        self.BASE_VOLUME = 0.1
+        self.VOLUME_MULTIPLIER = 5.0
         self.MAX_POSITIONS = 15
         self.BASE_TRAILING_ACTIVATION = 0.5  # Activate trailing stop after 0.5 % profit
         self.BASE_TRAILING_STOP = 0.3  # Set trailing stop at 0.3 % profit
@@ -204,11 +206,44 @@ class HedgingManager:
                 )
                 return
 
-            # Calculate position sizes
-            base_volume = 0.1
+            # Get symbol information for volume validation
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                self.logger.error(f"Failed to get symbol info for {symbol}")
+                return
+                
+            # Get volume constraints
+            min_volume = symbol_info.volume_min
+            max_volume = symbol_info.volume_max
+            volume_step = symbol_info.volume_step
+
+            # Calculate position sizes with confidence-based scaling
+            base_volume = max(min_volume, self.BASE_VOLUME)
+            confidence_difference = abs(buy_confidence - sell_confidence)
+            volume_multiplier = 1 + (confidence_difference * self.VOLUME_MULTIPLIER)
+            
             main_direction = "buy" if buy_confidence > sell_confidence else "sell"
-            main_volume = base_volume if main_direction == "buy" else base_volume
-            hedge_volume = base_volume if main_direction == "sell" else base_volume
+            
+            # Calculate and normalize main volume
+            raw_main_volume = base_volume * volume_multiplier
+            steps = round(raw_main_volume / volume_step)
+            main_volume = steps * volume_step
+            main_volume = max(min_volume, min(main_volume, max_volume))
+            
+            # hedge at base volume
+            hedge_volume = base_volume
+            
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.INFO,
+                    f"""Position sizing details:
+                    Main Volume: {main_volume:.3f}
+                    Hedge Volume: {hedge_volume:.3f}
+                    Confidence Diff: {confidence_difference:.3f}
+                    Min Volume: {min_volume:.3f}
+                    Volume Step: {volume_step:.3f}"""
+                )
+            )
 
             # Get ATR
             atr = self._calculate_atr(symbol)
@@ -226,6 +261,7 @@ class HedgingManager:
                 )
             )
 
+            # Open main position
             main_result = self._open_main_position(
                 symbol, main_direction, main_volume, atr
             )
