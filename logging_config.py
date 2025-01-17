@@ -2,7 +2,31 @@
 
 import logging
 import colorlog
-from datetime import datetime
+
+
+class EmojiLogger:
+    # Trading Status Emojis
+    POSITION_OPEN = "🟢"
+    POSITION_CLOSE = "🔴"
+    PROFIT = "💰"
+    LOSS = "📉"
+    WARNING = "⚠️"
+    ERROR = "❌"
+    INFO = "ℹ️"
+    HEDGE = "🔄"
+    TRAILING = "🎯"
+    VOLATILITY = "📊"
+    INCREASE = "⬆️"
+    DECREASE = "⬇️"
+    MARKET = "📈"
+    SUCCESS = "✅"
+    ALERT = "🚨"
+    TIME = "⏰"
+    AI = "🤖"
+
+    @staticmethod
+    def format_message(emoji: str, message: str) -> str:
+        return f"{emoji} {message}"
 
 
 def setup_comprehensive_logging():
@@ -77,5 +101,3 @@ def log_critical_event(event_type, message):
 {'!'*50}
 """
     logging.critical(critical_marker)
-
-

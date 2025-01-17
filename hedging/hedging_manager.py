@@ -6,7 +6,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 from config import mt5
-from logging_config import setup_comprehensive_logging
+from logging_config import setup_comprehensive_logging, EmojiLogger
 
 setup_comprehensive_logging()
 
@@ -27,6 +27,8 @@ class HedgedPosition:
     increased_position: bool = False
     winning_streak: int = 0
     entry_volatility: float = 0.0
+    last_increase_time: Optional[datetime] = None
+    increase_count: int = 0
 
 
 @dataclass
@@ -47,19 +49,23 @@ class HedgingManager:
         self.symbol_stats: Dict[str, Dict] = {}  # Track symbol-specific performance
 
         # Dynamic configuration
-        self.MAX_POSITIONS = 10
+        self.MAX_POSITIONS = 15
         self.BASE_TRAILING_ACTIVATION = 0.5  # Activate trailing stop after 0.5 % profit
-        self.BASE_TRAILING_STOP = 0.3
-        self.BASE_PROFIT_TARGET = 10.0
-        self.POSITION_INCREASE_FACTOR = 1.5
-        self.MAX_LOSS_PER_PAIR = -5.0
-        self.TRAILING_ACTIVATION_PERCENT = 15.0  # Activate trailing at 15% profit
-        self.LOSS_TIGHTENING_PERCENT = 15.0  # Tighten stops at 15% loss
-        self.POSITION_INCREASE_THRESHOLD = 15.0  # Increase position size at 15% profit
+        self.BASE_TRAILING_STOP = 0.3  # Set trailing stop at 0.3 % profit
+        self.BASE_PROFIT_TARGET = 2.0  # Profit targets at 2 usd
+        self.POSITION_INCREASE_FACTOR = 1.5  # Increase position size by 50%
+        self.MAX_LOSS_PER_PAIR = -2.0  # Stop losses at -2 usd
+        self.TRAILING_ACTIVATION_PERCENT = 5.0  # Activate trailing at 5% profit
+        self.LOSS_TIGHTENING_PERCENT = 5.0  # Tighten stops at 5% loss
+        self.POSITION_INCREASE_THRESHOLD = 5.0  # Increase position size at 5% profit
         self.STOP_TIGHTENING_FACTOR = 0.5  # How much to tighten stops (50% closer)
-        self.MAX_WINNING_STREAK_FACTOR = 2.5
-        self.VOLATILITY_ADJUSTMENT_FACTOR = 1.2
-        self.MIN_CONFIDENCE_THRESHOLD = 0.57
+        self.MAX_WINNING_STREAK_FACTOR = (
+            2.5  # Max lot size multiplier limit for winning streak
+        )
+        self.VOLATILITY_ADJUSTMENT_FACTOR = 1.2  #
+        self.MIN_CONFIDENCE_THRESHOLD = (
+            0.57  # Minimum model confidence for opening positions
+        )
 
         # Performance tracking
         self.winning_trades = 0
@@ -161,35 +167,48 @@ class HedgingManager:
             * confidence_factor
         )
 
-        calculated_volume = super()._calculate_position_size(symbol, base_volume, confidence)
-        logging.info(f"""
+        calculated_volume = super()._calculate_position_size(
+            symbol, base_volume, confidence
+        )
+        logging.info(
+            f"""
             Position size calculation for {symbol}:
             Base volume: {base_volume}
             Confidence: {confidence}
             Final volume: {calculated_volume}
-            """)
+            """
+        )
 
         return round(min(final_volume, base_volume * self.MAX_WINNING_STREAK_FACTOR), 2)
 
     def _try_open_hedged_position(self, symbol: str) -> None:
         try:
             # Get ML directional confidence
-            buy_confidence, sell_confidence = self.ml_predictor.get_directional_confidence()
-            self.logger.info(f"Directional confidence - Buy: {buy_confidence}, Sell: {sell_confidence}")
-
+            buy_confidence, sell_confidence = (
+                self.ml_predictor.get_directional_confidence()
+            )
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.AI,
+                    f"Directional confidence analysis for {symbol} - Buy: {buy_confidence:.2f}, Sell: {sell_confidence:.2f}",
+                )
+            )
             # Check confidence threshold
             min_confidence = self.MIN_CONFIDENCE_THRESHOLD
             if max(buy_confidence, sell_confidence) < min_confidence:
-                self.logger.info(f"Insufficient confidence. Required: {min_confidence}")
+                self.logger.info(
+                    EmojiLogger.format_message(
+                        EmojiLogger.AI,
+                        f"Insufficient confidence for {symbol}. Required: {min_confidence:.2f}",
+                    )
+                )
                 return
 
             # Calculate position sizes
-            base_volume = 0.4
+            base_volume = 0.1
             main_direction = "buy" if buy_confidence > sell_confidence else "sell"
             main_volume = base_volume if main_direction == "buy" else base_volume
             hedge_volume = base_volume if main_direction == "sell" else base_volume
-
-            self.logger.info(f"Calculated volumes - Main: {main_volume}, Hedge: {hedge_volume}")
 
             # Get ATR
             atr = self._calculate_atr(symbol)
@@ -198,16 +217,43 @@ class HedgingManager:
                 self.logger.error("ATR calculation failed")
                 return
 
-            # Open main position with error handling
-            self.logger.info(f"Attempting to open main position for {symbol}")
-            main_result = self._open_main_position(symbol, main_direction, main_volume, atr)
+            # Market Context
+            market_context = self._get_market_context(symbol)
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.MARKET,
+                    f"Market Context - Regime: {market_context.market_regime} | Volatility: {market_context.volatility:.4f} | Trend Strength: {market_context.trend_strength:.2f}",
+                )
+            )
+
+            main_result = self._open_main_position(
+                symbol, main_direction, main_volume, atr
+            )
+
+            if not main_result:
+                self.logger.error(
+                    EmojiLogger.format_message(
+                        EmojiLogger.ERROR, "Failed to open main position"
+                    )
+                )
+                return
+
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.SUCCESS,
+                    f"Main position opened - Ticket: {main_result.order} | Direction: {main_direction.upper()}",
+                )
+            )
 
             if main_result:
-                self.logger.info(f"Main position opened successfully: {main_result}")
                 main_position = mt5.positions_get(ticket=main_result.order)
 
                 if not main_position:
-                    self.logger.error("Could not get main position info after order placement")
+                    self.logger.error(
+                        EmojiLogger.format_message(
+                            EmojiLogger.ERROR, "Failed to get main position"
+                        )
+                    )
                     return
 
                 main_position = main_position[0]
@@ -246,34 +292,76 @@ class HedgingManager:
                 self.logger.error("Failed to open main position")
 
         except Exception as e:
-            self.logger.error(f"Error in _try_open_hedged_position: {str(e)}", exc_info=True)
+            self.logger.error(
+                f"Error in _try_open_hedged_position: {str(e)}", exc_info=True
+            )
 
     def _open_main_position(
         self, symbol: str, direction: str, volume: float, atr: float
     ):
         """Open main position with wider stops"""
-        return self.order_manager.place_hedged_order(
-            symbol=symbol,
-            direction=direction,
-            volume=volume,
-            atr=atr * 2.0,  # Using wider ATR multiplier for main position
-        )
+        try:
+            result = self.order_manager.place_hedged_order(
+                symbol=symbol,
+                direction=direction,
+                volume=volume,
+                atr=atr
+                * 2.0,  # Using wider ATR multiplier for main position  
+            )
+            return result
+        except Exception as e:
+            self.logger.error(
+                EmojiLogger.format_message(
+                    EmojiLogger.ERROR, f"Error opening main position: {str(e)}"
+                )
+            )
+            return None
 
     def _open_hedge_position(
         self, symbol: str, direction: str, volume: float, atr: float, main_position
     ):
         """Open hedge position with tighter stops"""
-        return self.order_manager.place_hedged_order(
-            symbol=symbol,
-            direction=direction,
-            volume=volume,
-            atr=atr * 1.5,  # Using tighter ATR multiplier for hedge
-        )
+        try:
+            result = self.order_manager.place_hedged_order(
+                symbol=symbol,
+                direction=direction,
+                volume=volume,
+                atr=atr * 1.5,  # Using tighter ATR multiplier for hedge
+            )
+            return result
+        except Exception as e:
+            self.logger.error(
+                EmojiLogger.format_message(
+                    EmojiLogger.ERROR, f"Error opening hedge position: {str(e)}"
+                )
+            )
+            return None
 
     def _manage_existing_positions(self, symbol: str) -> None:
         positions_to_remove = []
 
         for hedged_pos in self.hedged_positions[symbol]:
+            # Reset increased_position flag if profit drops below threshold
+            if hedged_pos.increased_position:
+                self.logger.info(
+                    EmojiLogger.format_message(
+                        EmojiLogger.INFO,
+                        f"Profit below threshold for {symbol}. Resetting increased_position flag.",
+                    )
+                )
+                main_profit_percent = (
+                    self._calculate_profit_percent(main_pos) if main_pos else 0
+                )
+                hedge_profit_percent = (
+                    self._calculate_profit_percent(hedge_pos) if hedge_pos else 0
+                )
+                if (
+                    max(main_profit_percent, hedge_profit_percent)
+                    < self.POSITION_INCREASE_THRESHOLD
+                ):
+                    hedged_pos.increased_position = False
+
+            # Check if both positions are still open
             try:
                 main_pos = mt5.positions_get(ticket=hedged_pos.main_ticket)
                 hedge_pos = mt5.positions_get(ticket=hedged_pos.hedge_ticket)
@@ -317,7 +405,12 @@ class HedgingManager:
                     )
 
             except Exception as e:
-                self.logger.error(f"Error managing positions: {str(e)}", exc_info=True)
+                self.logger.error(
+                    EmojiLogger.format_message(
+                        EmojiLogger.ERROR,
+                        f"Error in hedged position management: {str(e)}",
+                    )
+                )
 
         # Clean up closed positions
         for pos in positions_to_remove:
@@ -336,6 +429,10 @@ class HedgingManager:
         self, symbol: str, hedged_pos, main_pos, hedge_pos
     ) -> None:
         """Increase position size for profitable positions"""
+        if hedged_pos.last_increase_time:
+            time_since_last = datetime.now() - hedged_pos.last_increase_time
+            if time_since_last.total_seconds() < 600:  # 10 min minimum
+                return
         try:
             # Determine which position is profitable
             profitable_pos = (
@@ -351,8 +448,16 @@ class HedgingManager:
             if not profitable_pos:
                 return
 
-            # Calculate new position size (50% larger)
-            new_volume = profitable_pos.volume * 1.5
+            # Calculate increase factor based on current profit
+            profit_percent = self._calculate_profit_percent(profitable_pos)
+            increase_factor = 1.5  # Base increase
+
+            if profit_percent >= 10:
+                increase_factor = 2.0
+            if profit_percent >= 20:
+                increase_factor = 2.5
+
+            new_volume = profitable_pos.volume * increase_factor
 
             # Get current market context and ATR
             market_context = self._get_market_context(symbol)
@@ -425,6 +530,12 @@ class HedgingManager:
 
             # Get market context
             market_context = self._get_market_context(symbol)
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.MARKET,
+                    f"Market Context - Regime: {market_context.market_regime} | Volatility: {market_context.volatility:.4f} | Trend Strength: {market_context.trend_strength:.2f}",
+                )
+            )
 
             # Determine which position is losing more
             main_profit = main_pos.profit if main_pos else 0
@@ -504,13 +615,23 @@ class HedgingManager:
         self, hedged_pos, main_pos, hedge_pos, symbol, market_context
     ):
         """Profit target handling with sophisticated exit criteria"""
-        # Determine which position is profitable
-        profitable_pos = main_pos if (main_pos and main_pos.profit > 0) else hedge_pos
-        losing_pos = hedge_pos if profitable_pos == main_pos else main_pos
+        try:
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.PROFIT,
+                    f"Profit target reached for {symbol} - Main Profit: {main_pos.profit:.2f} | Hedge Profit: {hedge_pos.profit:.2f}",
+                )
+            )
 
-        if profitable_pos and losing_pos:
-            # Update statistics
-            self.symbol_stats[symbol]["winning_streak"] += 1
+            # Determine which position is profitable
+            profitable_pos = (
+                main_pos if (main_pos and main_pos.profit > 0) else hedge_pos
+            )
+            losing_pos = hedge_pos if profitable_pos == main_pos else main_pos
+
+            if profitable_pos and losing_pos:
+                # Update statistics
+                self.symbol_stats[symbol]["winning_streak"] += 1
             self.winning_trades += 1
             self.total_trades += 1
 
@@ -547,6 +668,13 @@ class HedgingManager:
             # Update risk parameters
             self._update_risk_parameters(symbol, True, market_context)
 
+        except Exception as e:
+            self.logger.error(
+                EmojiLogger.format_message(
+                    EmojiLogger.ERROR, f"Error handling profit target: {str(e)}"
+                )
+            )
+
     def _calculate_trailing_activation_price(
         self, position_ticket: int, direction: str
     ) -> float:
@@ -569,87 +697,124 @@ class HedgingManager:
             else entry_price - activation_move
         )
 
-    def _handle_stopped_position(self, hedged_pos, surviving_pos, closed_pos, symbol: str):
+    def _handle_stopped_position(
+        self, hedged_pos, surviving_pos, closed_pos, symbol: str
+    ):
         """Recovery strategy with dynamic position sizing and risk management"""
         try:
             # Calculate the loss from the closed position
             loss_amount = abs(closed_pos.profit)
-            
+
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.ALERT,
+                    f"Position stopped out - Symbol: {symbol} | Loss: {loss_amount:.2f} | Ticket: {closed_pos.ticket}",
+                )
+            )
+
             # Get current market context
             market_context = self._get_market_context(symbol)
-            
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.MARKET,
+                    f"Recovery market context - Regime: {market_context.market_regime} | Volatility: {market_context.volatility:.4f}",
+                )
+            )
+
             # Calculate base recovery volume with dynamic scaling
             base_recovery_volume = surviving_pos.volume
-            
+
             # Scale recovery volume based on market conditions
             volume_multiplier = 1.0
-            
+
             # Increase size more in trending markets
-            if market_context.market_regime == "TRENDING" and market_context.trend_strength > 25:
+            if (
+                market_context.market_regime == "TRENDING"
+                and market_context.trend_strength > 25
+            ):
                 volume_multiplier *= 1.8
-            
+
             # Reduce size in volatile markets
             elif market_context.market_regime == "VOLATILE":
                 volume_multiplier *= 0.8
-            
+
             # Consider winning streak
             if self.symbol_stats[symbol]["winning_streak"] > 2:
                 volume_multiplier *= 1.2
-            
+
             # Consider volatility
-            if market_context.volatility < self.symbol_stats[symbol]["volatility_history"][-20:].mean():
+            if (
+                market_context.volatility
+                < self.symbol_stats[symbol]["volatility_history"][-20:].mean()
+            ):
                 volume_multiplier *= 1.2
-            
+
             # Calculate final recovery volume
             recovery_volume = base_recovery_volume * volume_multiplier
-            
+
             # Apply maximum position size limit
-            max_allowed_volume = surviving_pos.volume * 2.5  # Never more than 2.5x original
+            max_allowed_volume = (
+                surviving_pos.volume * 2.5
+            )  # Never more than 2.5x original
             recovery_volume = min(recovery_volume, max_allowed_volume)
-            
+
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.INFO,
+                    f"Recovery volume: {recovery_volume:.2f} | Base volume: {base_recovery_volume:.2f}",
+                )
+            )
+
             # Calculate dynamic stop loss based on ATR and market regime
             atr = self._calculate_atr(symbol)
-            sl_multiplier = {
-                "TRENDING": 1.5,
-                "RANGING": 1.0,
-                "VOLATILE": 0.8
-            }.get(market_context.market_regime, 1.0)
-            
+            sl_multiplier = {"TRENDING": 1.5, "RANGING": 1.0, "VOLATILE": 0.8}.get(
+                market_context.market_regime, 1.0
+            )
+
             sl_distance = atr * sl_multiplier if atr else None
-            
+
             # Calculate profit target based on risk-reward ratio
             risk_reward_ratio = 2.0  # Minimum 2:1 reward-to-risk
             tp_distance = sl_distance * risk_reward_ratio if sl_distance else None
-            
+
             # Place recovery order
-            recovery_direction = "buy" if surviving_pos.type == mt5.ORDER_TYPE_BUY else "sell"
-            
+            recovery_direction = (
+                "buy" if surviving_pos.type == mt5.ORDER_TYPE_BUY else "sell"
+            )
+
             recovery_result = self.order_manager.place_hedged_order(
                 symbol=symbol,
                 direction=recovery_direction,
                 volume=recovery_volume,
                 sl_distance=sl_distance,
                 tp_distance=tp_distance,
-                market_context=market_context
+                market_context=market_context,
             )
-            
+
             if recovery_result:
                 self.logger.info(
-                    f"Placed recovery order: {recovery_result.order} "
-                    f"Volume: {recovery_volume}, "
-                    f"Market Regime: {market_context.market_regime}, "
-                    f"Multiplier: {volume_multiplier}"
+                    EmojiLogger.format_message(
+                        EmojiLogger.INFO,
+                        f"Placed recovery order: {recovery_result.order} "
+                        f"Volume: {recovery_volume}, "
+                        f"Market Regime: {market_context.market_regime}, "
+                        f"Multiplier: {volume_multiplier}",
+                    )
                 )
                 hedged_pos.recovery_ticket = recovery_result.order
-                
+
                 # Update position tracking
                 hedged_pos.increased_position = True
                 hedged_pos.current_phase = "RECOVERY"
-                
+
             return True
 
         except Exception as e:
-            self.logger.error(f"Error in _handle_stopped_position: {str(e)}", exc_info=True)
+            self.logger.error(
+                EmojiLogger.format_message(
+                    EmojiLogger.ERROR, f"Error in recovery handling: {str(e)}"
+                )
+            )
             return False
 
     def _convert_to_trailing_stop(
@@ -679,19 +844,49 @@ class HedgingManager:
 
     def _update_trailing_stop(self, position, hedged_position: HedgedPosition) -> None:
         """Update trailing stop with improved risk management"""
-        current_price = mt5.symbol_info_tick(position.symbol).bid
-        stop_distance = current_price * self.BASE_TRAILING_STOP / 100
+        try:
+            current_price = mt5.symbol_info_tick(position.symbol).bid
+            stop_distance = current_price * self.BASE_TRAILING_STOP / 100
 
-        if position.type == mt5.ORDER_TYPE_BUY:
-            new_sl = current_price - stop_distance
-            if new_sl > hedged_position.trailing_stop:
-                self._modify_sl_tp(position, new_sl, None)
-                hedged_position.trailing_stop = new_sl
-        else:
-            new_sl = current_price + stop_distance
-            if new_sl < hedged_position.trailing_stop:
-                self._modify_sl_tp(position, new_sl, None)
-                hedged_position.trailing_stop = new_sl
+            self.logger.info(
+                EmojiLogger.format_message(
+                    EmojiLogger.TRAILING,
+                    f"Updating trailing stop - Symbol: {position.symbol} | Current Price: {current_price:.5f} | Current SL: {position.sl:.5f}",
+                )
+            )
+
+            if position.type == mt5.ORDER_TYPE_BUY:
+                new_sl = current_price - stop_distance
+                if new_sl > hedged_position.trailing_stop:
+                    self._modify_sl_tp(position, new_sl, None)
+                    hedged_position.trailing_stop = new_sl
+            else:
+                new_sl = current_price + stop_distance
+                if new_sl < hedged_position.trailing_stop:
+                    self._modify_sl_tp(position, new_sl, None)
+                    hedged_position.trailing_stop = new_sl
+
+            if self._modify_sl_tp(position, new_sl, None):
+                self.logger.info(
+                    EmojiLogger.format_message(
+                        EmojiLogger.SUCCESS,
+                        f"Trailing stop updated - New SL: {new_sl:.5f} | Distance: {stop_distance:.5f}",
+                    )
+                )
+            else:
+                self.logger.warning(
+                    EmojiLogger.format_message(
+                        EmojiLogger.WARNING,
+                        f"Failed to update trailing stop for ticket {position.ticket}",
+                    )
+                )
+
+        except Exception as e:
+            self.logger.error(
+                EmojiLogger.format_message(
+                    EmojiLogger.ERROR, f"Error in trailing stop management: {str(e)}"
+                )
+            )
 
     def _update_risk_parameters(
         self, symbol: str, is_winning: bool, market_context: MarketContext
@@ -724,37 +919,63 @@ class HedgingManager:
     def _calculate_adx(self, symbol: str, period: int = 14) -> float:
         """Calculate Average Directional Index for trend strength with proper error handling"""
         try:
+            # Validate inputs
+            if not symbol or period <= 0:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Invalid inputs for ADX calculation: symbol={symbol}, period={period}"))
+                return 0.0
+                
+            # Verify symbol exists
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Symbol {symbol} not found in MT5"))
+                return 0.0
+            
             # Get enough data for calculation
             rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, period * 2 + 1)
             if rates is None or len(rates) < period * 2:
-                self.logger.warning(f"Insufficient data for ADX calculation for {symbol}")
+                self.logger.warning(EmojiLogger.format_message(EmojiLogger.WARNING, f"Insufficient data for ADX calculation for {symbol}"))
                 return 0.0
 
             # Convert to numpy arrays
-            high = np.array([rate['high'] for rate in rates])
-            low = np.array([rate['low'] for rate in rates])
-            close = np.array([rate['close'] for rate in rates])
+            try:
+                high = np.array([rate["high"] for rate in rates], dtype=np.float64)
+                low = np.array([rate["low"] for rate in rates], dtype=np.float64)
+                close = np.array([rate["close"] for rate in rates], dtype=np.float64)
+            except (KeyError, ValueError) as e:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error converting price data: {str(e)}"))
+                return 0.0
+            
+            # Validate price data
+            if np.any(np.isnan(high)) or np.any(np.isnan(low)) or np.any(np.isnan(close)):
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"NaN values found in price data"))
+                return 0.0
 
             # Ensure arrays are the correct length
-            high = high[:-1]  # Remove last element to match length after differentiation
+            high = high[
+                :-1
+            ]  # Remove last element to match length after differentiation
             low = low[:-1]
             close = close[:-1]
 
             # Calculate True Range
             tr = np.zeros(len(high))
             for i in range(1, len(high)):
-                hl = high[i] - low[i]
-                hc = abs(high[i] - close[i-1])
-                lc = abs(low[i] - close[i-1])
-                tr[i] = max(hl, hc, lc)
+                try:
+                    hl = high[i] - low[i]
+                    hc = abs(high[i] - close[i - 1])
+                    lc = abs(low[i] - close[i - 1])
+                    tr[i] = max(hl, hc, lc)
+                except IndexError as e:
+                    self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Index error in TR calculation: {str(e)}"))
+                    return 0.0
 
             # Calculate Directional Movement
             plus_dm = np.zeros(len(high))
             minus_dm = np.zeros(len(high))
 
             for i in range(1, len(high)):
-                up_move = high[i] - high[i-1]
-                down_move = low[i-1] - low[i]
+                up_move = high[i] - high[i - 1]
+                down_move = low[i - 1] - low[i]
 
                 if up_move > down_move and up_move > 0:
                     plus_dm[i] = up_move
@@ -767,57 +988,100 @@ class HedgingManager:
                     minus_dm[i] = 0
 
             # Calculate smoothed averages
-            tr_period = tr[-period:].mean()
             plus_period = plus_dm[-period:].mean()
             minus_period = minus_dm[-period:].mean()
 
-            # Avoid division by zero
-            if tr_period == 0:
+            # Calculate DI with validation
+            try:
+                tr_period = tr[-period:].mean()
+                if tr_period == 0:
+                    self.logger.warning(EmojiLogger.format_message(EmojiLogger.WARNING, f"TR period is zero"))
+                    return 0.0
+
+                plus_di = plus_period / tr_period * 100 if tr_period > 0 else 0
+                minus_di = minus_period / tr_period * 100 if tr_period > 0 else 0
+
+                # Validate DI values
+                if not (0 <= plus_di <= 100) or not (0 <= minus_di <= 100):
+                    self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Invalid DI values: +DI={plus_di}, -DI={minus_di}"))
+                    return 0.0
+
+                # Calculate ADX
+                dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) > 0 else 0
+                
+                return float(dx)
+
+            except Exception as e:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error in DI/ADX calculation: {str(e)}"))
                 return 0.0
 
-            # Calculate DI+ and DI-
-            plus_di = (plus_period / tr_period) * 100
-            minus_di = (minus_period / tr_period) * 100
-
-            # Calculate DX and ADX
-            dx = 0.0
-            if (plus_di + minus_di) != 0:
-                dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-
-            return float(dx)
-
         except Exception as e:
-            self.logger.error(f"Error calculating ADX for {symbol}: {str(e)}")
+            self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error calculating ADX for {symbol}: {str(e)}"))
             return 0.0
 
     def _calculate_atr(self, symbol: str, period: int = 14) -> Optional[float]:
-        """Calculate Average True Range with proper error handling"""
+        """Calculate ATR with comprehensive error handling"""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, period + 1)
-            if rates is None or len(rates) < period + 1:
-                self.logger.warning(f"Insufficient data for ATR calculation for {symbol}")
+            # Validate inputs
+            if not symbol or period <= 0:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Invalid inputs for ATR calculation: symbol={symbol}, period={period}"))
                 return None
 
-            # Convert to numpy arrays
-            high = np.array([rate['high'] for rate in rates])
-            low = np.array([rate['low'] for rate in rates])
-            close = np.array([rate['close'] for rate in rates])
+            # Verify symbol exists
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Symbol {symbol} not found in MT5"))
+                return None
 
-            # Calculate true range
+            # Get price data with timeout handling
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, period + 1)
+            if rates is None or len(rates) < period + 1:
+                self.logger.warning(EmojiLogger.format_message(EmojiLogger.WARNING, f"Insufficient data for ATR calculation for {symbol}"))
+                return None
+
+            # Convert to numpy arrays with validation
+            try:
+                high = np.array([rate["high"] for rate in rates], dtype=np.float64)
+                low = np.array([rate["low"] for rate in rates], dtype=np.float64)
+                close = np.array([rate["close"] for rate in rates], dtype=np.float64)
+            except (KeyError, ValueError) as e:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error converting price data for ATR: {str(e)}"))
+                return None
+
+            # Validate price data
+            if np.any(np.isnan(high)) or np.any(np.isnan(low)) or np.any(np.isnan(close)):
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"NaN values found in price data for ATR"))
+                return None
+
+            # Calculate true range with validation
             tr = np.zeros(len(high))
             for i in range(1, len(tr)):
-                hl = high[i] - low[i]
-                hc = abs(high[i] - close[i-1])
-                lc = abs(low[i] - close[i-1])
-                tr[i] = max(hl, hc, lc)
+                try:
+                    hl = high[i] - low[i]
+                    hc = abs(high[i] - close[i - 1])
+                    lc = abs(low[i] - close[i - 1])
+                    tr[i] = max(hl, hc, lc)
+                except IndexError as e:
+                    self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Index error in ATR calculation: {str(e)}"))
+                    return None
 
-            # Calculate ATR
-            atr = tr[1:].mean()  # Exclude the first zero value
+            # Calculate ATR with validation
+            try:
+                atr = tr[1:].mean()  # Exclude the first zero value
+                
+                # Validate ATR value
+                if np.isnan(atr) or atr <= 0:
+                    self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Invalid ATR value calculated: {atr}"))
+                    return None
 
-            return float(atr)
+                return float(atr)
+
+            except Exception as e:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error in final ATR calculation: {str(e)}"))
+                return None
 
         except Exception as e:
-            self.logger.error(f"Error calculating ATR for {symbol}: {str(e)}")
+            self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error calculating ATR for {symbol}: {str(e)}"))
             return None
 
     def _get_market_context(self, symbol: str) -> MarketContext:
@@ -834,7 +1098,7 @@ class HedgingManager:
                     trend_strength=0.0,
                     recent_volume=0.0,
                     avg_spread=0.0,
-                    market_regime="RANGING"  # Default to ranging when data is insufficient
+                    market_regime="RANGING",  # Default to ranging when data is insufficient
                 )
 
             volatility = atr / current_tick.bid if current_tick.bid != 0 else 0.0
@@ -845,7 +1109,11 @@ class HedgingManager:
             # Get recent volume with error handling
             try:
                 volume_data = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 20)
-                recent_volume = float(np.mean([rate['tick_volume'] for rate in volume_data])) if volume_data is not None else 0.0
+                recent_volume = (
+                    float(np.mean([rate["tick_volume"] for rate in volume_data]))
+                    if volume_data is not None
+                    else 0.0
+                )
             except Exception as e:
                 self.logger.warning(f"Error calculating recent volume: {str(e)}")
                 recent_volume = 0.0
@@ -858,14 +1126,16 @@ class HedgingManager:
                 avg_spread = symbol_info.spread * symbol_info.point
 
             # Determine market regime with safe defaults
-            market_regime = self._determine_market_regime(volatility, adx, recent_volume)
+            market_regime = self._determine_market_regime(
+                volatility, adx, recent_volume
+            )
 
             return MarketContext(
                 volatility=volatility,
                 trend_strength=adx,
                 recent_volume=recent_volume,
                 avg_spread=avg_spread,
-                market_regime=market_regime
+                market_regime=market_regime,
             )
 
         except Exception as e:
@@ -875,5 +1145,5 @@ class HedgingManager:
                 trend_strength=0.0,
                 recent_volume=0.0,
                 avg_spread=0.0,
-                market_regime="RANGING"
+                market_regime="RANGING",
             )
