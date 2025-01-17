@@ -54,14 +54,14 @@ class HedgingManager:
         self.BASE_VOLUME = 0.1
         self.VOLUME_MULTIPLIER = 5.0
         self.MAX_POSITIONS = 15
-        self.BASE_TRAILING_ACTIVATION = 0.8  # Activate trailing stop after 0.8 % profit
-        self.BASE_TRAILING_STOP = 0.5  # Set trailing stop at 0.5 % profit
-        self.BASE_PROFIT_TARGET = 20.0  # Profit targets at 20 usd
+        self.BASE_TRAILING_ACTIVATION = 0.3  # Activate trailing stop after 0.3 % profit
+        self.BASE_TRAILING_STOP = 0.2  # Set trailing stop at 0.2 % profit
+        self.BASE_PROFIT_TARGET = 10.0  # Profit targets at 20 usd
         self.POSITION_INCREASE_FACTOR = 1.5  # Increase position size by 50%
         self.MAX_LOSS_PER_PAIR = -40.0  # Stop losses at -40 usd
-        self.TRAILING_ACTIVATION_PERCENT = 3.0  # Activate trailing at 3% profit
+        self.TRAILING_ACTIVATION_PERCENT = 1.0  # Activate trailing at 1% profit
         self.LOSS_TIGHTENING_PERCENT = 5.0  # Tighten stops at 5% loss
-        self.POSITION_INCREASE_THRESHOLD = 3.0  # Increase position size at 3% profit
+        self.POSITION_INCREASE_THRESHOLD = 1.0  # Increase position size at 1% profit
         self.STOP_TIGHTENING_FACTOR = 0.7  # How much to tighten stops (70% closer)
         self.MAX_WINNING_STREAK_FACTOR = (
             2.5  # Max lot size multiplier limit for winning streak
@@ -80,6 +80,7 @@ class HedgingManager:
             0.7  # Confidence needed to maintain position
         )
         self.MAX_ADVERSE_MOVE = 0.2  # Maximum allowable adverse move before closing
+        self.PRICE_DEVIATION_POINTS = 10  # Price deviation in points to close position
 
         # Performance tracking
         self.winning_trades = 0
@@ -153,47 +154,54 @@ class HedgingManager:
         self, symbol: str, base_volume: float, confidence: float
     ) -> float:
         """Calculate position size based on performance and market conditions"""
-        stats = self.symbol_stats[symbol]
+        try:
+            # Get symbol info for volume constraints
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Symbol info not found for {symbol}"))
+                return 0.0
 
-        # Base scaling factors
-        winning_streak_factor = 1.0 + (0.1 * stats["winning_streak"])
-        success_rate_factor = (
-            1.0 + (stats["success_rate"] - 0.5) if stats["success_rate"] > 0.5 else 1.0
-        )
+            # Calculate volume with previous logic
+            winning_streak_factor = 1.0 + (
+                0.1 * self.symbol_stats[symbol]["winning_streak"]
+            )
+            success_rate_factor = (
+                1.0 + (self.symbol_stats[symbol]["success_rate"] - 0.5)
+                if self.symbol_stats[symbol]["success_rate"] > 0.5
+                else 1.0
+            )
+            risk_factor = (
+                max(0.5, 1.0 - (abs(self.current_drawdown) / self.max_drawdown))
+                if self.max_drawdown != 0
+                else 1.0
+            )
+            confidence_factor = (confidence - self.MIN_CONFIDENCE_THRESHOLD) / (
+                1 - self.MIN_CONFIDENCE_THRESHOLD
+            )
 
-        # Risk-based scaling
-        risk_factor = (
-            max(0.5, 1.0 - (abs(self.current_drawdown) / self.max_drawdown))
-            if self.max_drawdown != 0
-            else 1.0
-        )
+            # Calculate raw volume
+            raw_volume = (
+                base_volume
+                * winning_streak_factor
+                * success_rate_factor
+                * risk_factor
+                * confidence_factor
+            )
 
-        # Confidence scaling
-        confidence_factor = (confidence - self.MIN_CONFIDENCE_THRESHOLD) / (
-            1 - self.MIN_CONFIDENCE_THRESHOLD
-        )
+            # Normalize volume to symbol constraints
+            steps = round(raw_volume / symbol_info.volume_step)
+            normalized_volume = steps * symbol_info.volume_step
 
-        final_volume = (
-            base_volume
-            * winning_streak_factor
-            * success_rate_factor
-            * risk_factor
-            * confidence_factor
-        )
+            # Ensure volume is within bounds
+            final_volume = max(
+                symbol_info.volume_min, min(normalized_volume, symbol_info.volume_max)
+            )
 
-        calculated_volume = super()._calculate_position_size(
-            symbol, base_volume, confidence
-        )
-        logging.info(
-            f"""
-            Position size calculation for {symbol}:
-            Base volume: {base_volume}
-            Confidence: {confidence}
-            Final volume: {calculated_volume}
-            """
-        )
+            return final_volume
 
-        return round(min(final_volume, base_volume * self.MAX_WINNING_STREAK_FACTOR), 2)
+        except Exception as e:
+            self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, f"Error calculating position size: {str(e)}"))
+            return 0.0
 
     def _try_open_hedged_position(self, symbol: str) -> None:
         try:
@@ -331,6 +339,7 @@ class HedgingManager:
                 avg_range = np.mean([h - l for h, l in zip(recent_highs, recent_lows)])
 
                 atr_stop_multiplier = 1.5  # Stop loss is 1.5 of ATR
+                tp_range_multiplier = 0.3
 
                 # Set stop losses and take profit levels
                 if main_direction == "buy":
@@ -367,12 +376,12 @@ class HedgingManager:
                     hedge_volume=hedge_volume,
                     current_phase="HEDGED",
                     entry_time=datetime.now(),
-                    stop_loss=stop_loss,  # Added stop loss
+                    stop_loss=stop_loss,
                     tp_levels=[tp1, tp2, tp3],
                     tp_volumes = [
-                    main_volume * 0.5,  # Take more profit at first level (increased from 0.4)
-                    main_volume * 0.3,  # Keep middle level the same
-                    main_volume * 0.2,  # Reduce last level (reduced from 0.3)
+                    main_volume * 0.6,  # Take more profit at first level (increased from 0.4)
+                    main_volume * 0.25,  # Keep middle level the same
+                    main_volume * 0.15,  # Reduce last level (reduced from 0.3)
                         ],
                     trailing_activation_price=activation_price,
                 )
@@ -568,7 +577,7 @@ class HedgingManager:
                     if position.type == mt5.ORDER_TYPE_BUY
                     else mt5.symbol_info_tick(position.symbol).ask
                 ),
-                "deviation": self.order_manager.PRICE_DEVIATION_POINTS,
+                "deviation": self.PRICE_DEVIATION_POINTS,
                 "magic": position.magic,
                 "comment": "partial_tp",
                 "type_time": mt5.ORDER_TIME_GTC,
@@ -1013,6 +1022,10 @@ class HedgingManager:
     def _update_trailing_stop(self, position, hedged_position: HedgedPosition) -> None:
         """Update trailing stop with improved risk management"""
         try:
+            if not position:
+                self.logger.error(EmojiLogger.format_message(EmojiLogger.ERROR, "Position not found for trailing stop update"))
+                return
+
             current_price = mt5.symbol_info_tick(position.symbol).bid
             stop_distance = current_price * self.BASE_TRAILING_STOP / 100
 
@@ -1022,6 +1035,18 @@ class HedgingManager:
                     f"Updating trailing stop - Symbol: {position.symbol} | Current Price: {current_price:.5f} | Current SL: {position.sl:.5f}",
                 )
             )
+
+            # Initialize trailing_stop if None
+            if hedged_position.trailing_stop is None:
+                hedged_position.trailing_stop = (
+                    position.sl
+                    if position.sl
+                    else (
+                        current_price - stop_distance
+                        if position.type == mt5.ORDER_TYPE_BUY
+                        else current_price + stop_distance
+                    )
+                )
 
             if position.type == mt5.ORDER_TYPE_BUY:
                 new_sl = current_price - stop_distance
