@@ -23,6 +23,7 @@ class EmojiLogger:
     ALERT = "🚨"
     TIME = "⏰"
     AI = "🤖"
+    
 
     @staticmethod
     def format_message(emoji: str, message: str) -> str:

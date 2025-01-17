@@ -475,7 +475,7 @@ class OrderManager:
             return None
 
     def modify_position_sl_tp(self, ticket: int, new_sl: float = None, new_tp: float = None) -> bool:
-        """Modify position's stop loss and/or take profit"""
+        """Modify position's stop loss and/or take profit with improved validation"""
         try:
             position = mt5.positions_get(ticket=ticket)
             if not position:
@@ -484,26 +484,56 @@ class OrderManager:
                 
             position = position[0]
             symbol_info = mt5.symbol_info(position.symbol)
-            
+            if not symbol_info:
+                self.logger.error(f"Symbol info not found for {position.symbol}")
+                return False
+
+            current_price = mt5.symbol_info_tick(position.symbol)
+            if not current_price:
+                self.logger.error(f"Unable to get current price for {position.symbol}")
+                return False
+
+            # Validate stop loss levels
+            if new_sl is not None:
+                if position.type == mt5.ORDER_TYPE_BUY:
+                    if new_sl >= current_price.bid:
+                        self.logger.error(f"Invalid stop loss level for buy position: {new_sl} >= {current_price.bid}")
+                        return False
+                else:  # SELL position
+                    if new_sl <= current_price.ask:
+                        self.logger.error(f"Invalid stop loss level for sell position: {new_sl} <= {current_price.ask}")
+                        return False
+
             # Add minimal spread check to prevent too frequent modifications
             min_spread = symbol_info.point * symbol_info.spread
             
+            # Only proceed if the change is significant enough
+            if new_sl is not None and position.sl != 0 and abs(new_sl - position.sl) <= min_spread:
+                self.logger.info(f"Stop loss modification too small (within spread): {abs(new_sl - position.sl)} <= {min_spread}")
+                return False
+                
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "position": ticket,
-                "sl": new_sl if new_sl is not None else 0.0,
-                "tp": new_tp if new_tp is not None else 0.0,
+                "symbol": position.symbol,  # Added symbol field
+                "sl": new_sl if new_sl is not None else position.sl,  # Keep existing SL if not modifying
+                "tp": new_tp if new_tp is not None else position.tp,  # Keep existing TP if not modifying
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
             }
             
-            # Only modify if the change is greater than the spread
-            if new_sl is not None and abs(new_sl - position.sl) <= min_spread:
+            self.logger.info(f"Sending modify request: {request}")
+            result = mt5.order_send(request)
+            
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"Successfully modified position {ticket}")
+                return True
+            else:
+                self.logger.error(f"Failed to modify position {ticket}. Result: {result.retcode if result else 'No result'}")
                 return False
                 
-            result = mt5.order_send(request)
-            return result and result.retcode == mt5.TRADE_RETCODE_DONE
-            
         except Exception as e:
-            self.logger.error(f"Error modifying position SL/TP: {str(e)}")
+            self.logger.error(f"Error modifying position SL/TP: {str(e)}", exc_info=True)
             return False
 
     def _send_order(self, request):

@@ -72,10 +72,10 @@ class TradingBot:
 
         while not SHUTDOWN_EVENT.is_set():
             try:
-                # First manage hedged positions using the symbol-specific hedging manager
+                # Manage hedged positions 
                 self.hedging_managers[symbol].manage_hedged_positions(symbol)
 
-                # Only proceed with regular position management if no hedged positions exist
+                # Proceed with regular position management if no hedged positions exist
                 if not self.hedging_managers[symbol].hedged_positions.get(symbol, []):
                     # Manage existing regular positions
                     self.position_manager.manage_open_positions(
