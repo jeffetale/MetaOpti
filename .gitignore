@@ -24,3 +24,7 @@ backtest/__pycache__/
 ml/__pycache__/
 ml/features/__pycache__/
 utils/__pycache__/
+hedging/__pycache__/
+hedging/hedging_manager.py.bak
+hedging/hedging_manager_1.py
+hedging/hedging_manager_2.py

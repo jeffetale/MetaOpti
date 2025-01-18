@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import numpy as np
 from config import mt5
 from logging_config import setup_comprehensive_logging, EmojiLogger
@@ -449,10 +449,16 @@ class HedgingManager:
             self._check_position_safety(hedged_pos)
             try:
                 main_pos = mt5.positions_get(ticket=hedged_pos.main_ticket)
-                if not main_pos:
+                hedge_pos = mt5.positions_get(ticket=hedged_pos.hedge_ticket)
+                
+                if not main_pos or not hedge_pos:
                     continue
 
                 main_pos = main_pos[0]
+                hedge_pos = hedge_pos[0]
+                
+                self._manage_hedge_position(hedge_pos, main_pos, hedged_pos)
+                
                 current_price = (
                     mt5.symbol_info_tick(symbol).bid
                     if main_pos.type == mt5.ORDER_TYPE_BUY
@@ -500,6 +506,92 @@ class HedgingManager:
 
             except Exception as e:
                 self.logger.error(f"Error managing position: {str(e)}")
+
+    def _manage_hedge_position(self, hedge_pos, main_pos, hedged_position: HedgedPosition) -> None:
+        """
+        Enhanced management of hedge positions with dynamic trailing stops and profit protection
+        """
+        try:
+            if not hedge_pos:
+                return
+
+            current_price = mt5.symbol_info_tick(hedge_pos.symbol).bid if hedge_pos.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(hedge_pos.symbol).ask
+
+            # Calculate profit metrics
+            entry_price = hedge_pos.price_open
+            profit_points = (current_price - entry_price) if hedge_pos.type == mt5.ORDER_TYPE_BUY else (entry_price - current_price)
+            profit_percent = (profit_points / entry_price) * 100
+
+            # Define profit thresholds
+            INITIAL_LOCK_THRESHOLD = 0.15  # Start locking profits at 0.15%
+            TIGHT_TRAIL_THRESHOLD = 0.3   # Tighter trailing at 0.3%
+            SECURE_PROFIT_THRESHOLD = 0.5  # Secure significant profits at 0.5%
+
+            # Get ATR for dynamic stop calculation
+            atr = self._calculate_atr(hedge_pos.symbol)
+
+            if profit_percent >= SECURE_PROFIT_THRESHOLD:
+                # Secure significant profits with tight trailing stop
+                stop_distance = atr * 0.5  # Half ATR for tight protection
+                new_sl = (
+                    current_price - stop_distance if hedge_pos.type == mt5.ORDER_TYPE_BUY 
+                    else current_price + stop_distance
+                )
+
+                # Only modify if new stop is more favorable
+                if hedge_pos.type == mt5.ORDER_TYPE_BUY and (not hedge_pos.sl or new_sl > hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+                elif hedge_pos.type == mt5.ORDER_TYPE_SELL and (not hedge_pos.sl or new_sl < hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+
+            elif profit_percent >= TIGHT_TRAIL_THRESHOLD:
+                # Moderate trailing stop
+                stop_distance = atr * 0.75  # 75% ATR for moderate protection
+                new_sl = (
+                    current_price - stop_distance if hedge_pos.type == mt5.ORDER_TYPE_BUY 
+                    else current_price + stop_distance
+                )
+
+                if hedge_pos.type == mt5.ORDER_TYPE_BUY and (not hedge_pos.sl or new_sl > hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+                elif hedge_pos.type == mt5.ORDER_TYPE_SELL and (not hedge_pos.sl or new_sl < hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+
+            elif profit_percent >= INITIAL_LOCK_THRESHOLD:
+                # Initial profit lock with wider stop
+                stop_distance = atr * 1.0  # Full ATR for initial protection
+                new_sl = (
+                    current_price - stop_distance if hedge_pos.type == mt5.ORDER_TYPE_BUY 
+                    else current_price + stop_distance
+                )
+
+                if hedge_pos.type == mt5.ORDER_TYPE_BUY and (not hedge_pos.sl or new_sl > hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+                elif hedge_pos.type == mt5.ORDER_TYPE_SELL and (not hedge_pos.sl or new_sl < hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+
+            # Check correlation with main position
+            if main_pos and main_pos.profit < 0 and hedge_pos.profit > 0:
+                # If main is losing but hedge is winning, protect hedge profits more aggressively
+                stop_distance = atr * 0.5  # Tighter stop when acting as hedge protection
+                new_sl = (
+                    current_price - stop_distance if hedge_pos.type == mt5.ORDER_TYPE_BUY 
+                    else current_price + stop_distance
+                )
+
+                if hedge_pos.type == mt5.ORDER_TYPE_BUY and (not hedge_pos.sl or new_sl > hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+                elif hedge_pos.type == mt5.ORDER_TYPE_SELL and (not hedge_pos.sl or new_sl < hedge_pos.sl):
+                    self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_sl)
+
+            self.logger.info(EmojiLogger.format_message(EmojiLogger.HEDGE,
+                f"Managed hedge position {hedge_pos.ticket} - "
+                f"Profit: {profit_percent:.2f}% | "
+                f"Current SL: {hedge_pos.sl:.5f}"
+            ))
+
+        except Exception as e:
+            self.logger.error(f"Error managing hedge position: {str(e)}", exc_info=True)
 
     def _should_reenter_position(self, symbol: str, position_type) -> bool:
         """Determine if we should open a new position after taking profit"""
@@ -1052,15 +1144,15 @@ class HedgingManager:
             if position.type == mt5.ORDER_TYPE_BUY:
                 new_sl = current_price - stop_distance
                 if new_sl > hedged_position.trailing_stop:
-                    self._modify_sl_tp(position, new_sl, None)
+                    self.order_manager._modify_sl_tp(position, new_sl, None)
                     hedged_position.trailing_stop = new_sl
             else:
                 new_sl = current_price + stop_distance
                 if new_sl < hedged_position.trailing_stop:
-                    self._modify_sl_tp(position, new_sl, None)
+                    self.order_manager._modify_sl_tp(position, new_sl, None)
                     hedged_position.trailing_stop = new_sl
 
-            if self._modify_sl_tp(position, new_sl, None):
+            if self.order_manager._modify_sl_tp(position, new_sl, None):
                 self.logger.info(
                     EmojiLogger.format_message(
                         EmojiLogger.SUCCESS,
@@ -1087,53 +1179,53 @@ class HedgingManager:
         try:
             main_pos = mt5.positions_get(ticket=hedged_pos.main_ticket)
             hedge_pos = mt5.positions_get(ticket=hedged_pos.hedge_ticket)
-            
+
             if not main_pos or not hedge_pos:
                 return
-                
+
             main_pos = main_pos[0]
             hedge_pos = hedge_pos[0]
-            
+
             # Calculate profit ratios
             main_profit_ratio = main_pos.profit / (main_pos.volume * 100)  # Normalize by position size
             hedge_profit_ratio = hedge_pos.profit / (hedge_pos.volume * 100)
-            
+
             # Calculate position loss percentage
             main_pos_loss_percent = (main_pos.profit / (main_pos.price_open * main_pos.volume * 100)) * 100
-            
+
             # Define risk thresholds
             PROFIT_DISPARITY_THRESHOLD = 2.0  # Hedge is making 2x more profit per lot
             MAX_LOSS_THRESHOLD = -0.5  # Maximum -0.5% loss on main position
             QUICK_EXIT_THRESHOLD = -1.0  # Emergency exit at -1% loss
-            
+
             # Case 1: Position exceeds max loss threshold but not yet at quick exit level
             if MAX_LOSS_THRESHOLD >= main_pos_loss_percent > QUICK_EXIT_THRESHOLD:
                 current_price = mt5.symbol_info_tick(main_pos.symbol).ask if main_pos.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(main_pos.symbol).bid
-                
+
                 # Set very tight stop loss to prevent further losses
                 new_sl = self._calculate_defensive_stop(main_pos, current_price, aggressive=True)
                 self.order_manager.modify_position_sl_tp(main_pos.ticket, new_sl=new_sl)
-                
+
                 self.logger.warning(
                     f"Max loss threshold reached for main position {main_pos.ticket} "
                     f"Loss: {main_pos_loss_percent:.2f}% | Setting tight stop at: {new_sl:.5f}"
                 )
-            
+
             # Case 2: Hedge is profiting significantly while main is losing
             elif (hedge_profit_ratio > abs(main_profit_ratio) * PROFIT_DISPARITY_THRESHOLD 
                 and main_pos.profit < 0):
-                
+
                 current_price = mt5.symbol_info_tick(main_pos.symbol).ask if main_pos.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(main_pos.symbol).bid
-                
+
                 # Set moderately tight stop loss
                 new_sl = self._calculate_defensive_stop(main_pos, current_price, aggressive=False)
                 self.order_manager.modify_position_sl_tp(main_pos.ticket, new_sl=new_sl)
-                
+
                 self.logger.warning(
                     f"Setting defensive stop loss for losing main position {main_pos.ticket} "
                     f"Current loss: {main_pos.profit:.2f} | New SL: {new_sl:.5f}"
                 )
-                
+
             # Case 3: Emergency exit if loss exceeds threshold
             elif main_pos_loss_percent <= QUICK_EXIT_THRESHOLD:
                 self.logger.warning(
@@ -1141,13 +1233,13 @@ class HedgingManager:
                     f"Loss exceeded quick exit threshold: {main_pos_loss_percent:.2f}%"
                 )
                 self.order_manager.close_position(main_pos)
-                
+
                 # Adjust hedge position if needed
                 if hedge_pos.profit > 0:
                     # Move stop loss to secure some profit
                     new_hedge_sl = self._calculate_profit_lock_level(hedge_pos)
                     self.order_manager.modify_position_sl_tp(hedge_pos.ticket, new_sl=new_hedge_sl)
-                    
+
         except Exception as e:
             self.logger.error(f"Error in position safety check: {str(e)}", exc_info=True)
 
@@ -1156,10 +1248,10 @@ class HedgingManager:
         atr = self._calculate_atr(position.symbol)
         if not atr:
             return position.sl  # Keep existing stop if ATR calculation fails
-            
+
         # Use tighter stop distance if aggressive mode is enabled
         stop_distance = atr * (0.3 if aggressive else 0.5)  # Tighter stop for aggressive mode
-        
+
         if position.type == mt5.ORDER_TYPE_BUY:
             return max(current_price - stop_distance, position.sl)
         else:
@@ -1169,7 +1261,7 @@ class HedgingManager:
         """Calculate level to lock in profits for hedge positions"""
         profit_ticks = position.profit / (position.volume * 100)  # Approximate ticks of profit
         lock_ratio = 0.6  # Lock in 60% of current profit
-        
+
         if position.type == mt5.ORDER_TYPE_BUY:
             return position.price_open + (profit_ticks * lock_ratio)
         else:

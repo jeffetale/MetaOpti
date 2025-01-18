@@ -66,7 +66,6 @@ class TradingBot:
         if symbol_info is None:
             logging.error(f"Symbol {symbol} not found in MT5")
             return
-        logging.info(f"Symbol {symbol} found with properties: {symbol_info._asdict()}")
 
         logging.info(f"Starting trading thread for {symbol}")
 

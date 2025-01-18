@@ -459,7 +459,6 @@ class OrderManager:
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
             
-            self.logger.info(f"Sending order request: {request}")
             result = mt5.order_send(request)
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
